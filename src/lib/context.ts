@@ -108,7 +108,8 @@ export function buildContext(at: LngLat, when: Date, weather: Weather | null, ti
   const raining = !!weather && (weather.precipMm >= 0.3 || weather.precipProb >= 60);
   const windy = !!weather && weather.windKph >= 30;
   let sunPref: WalkContext['sunPref'] = 'none';
-  if (weather && !night) {
+  // Under solid cloud there is no sunny side to choose.
+  if (weather && !night && weather.cloudPct <= 85) {
     if (weather.tempC < 17) sunPref = 'sun';
     else if (weather.tempC > 23) sunPref = 'shade';
   }

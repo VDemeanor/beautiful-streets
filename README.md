@@ -14,15 +14,15 @@ npm install
 npm run dev          # http://localhost:3000
 ```
 
-On first load the server downloads the street network from OpenStreetMap and
-elevations from Open-Meteo, scores every block, and stores the result in
-`data/beautiful-streets.db`. That takes a minute or two, once. To redo it later:
+The repo ships with a snapshot of the real street network (`data/streets.json`,
+3,875 blocks), so the app starts immediately with no download. The snapshot is
+rebuilt by the "Import streets" GitHub workflow, which pulls streets from
+OpenStreetMap, trees from San Francisco's street-tree inventory and elevations
+from Open-Meteo or Open Topo Data, then writes a check of the result to
+`data/import-report.md`. Run it from the Actions tab whenever you want fresh
+data, or change the bounding box in `src/lib/osm.ts` to cover more of the city.
 
-```bash
-npm run import:streets
-```
-
-No network, or just want to click around? Use the made-up demo grid:
+Want to click around on invented streets instead? Use the demo grid:
 
 ```bash
 npm run seed:demo    # or start with BS_SEED=demo on an empty database
@@ -40,11 +40,13 @@ npm run build && npm start
 1. **Blocks.** Every walkable street is cut at each intersection. A block is the
    unit everything else works on.
 2. **Map-data score.** Each block gets four scores from 0 to 1 using what
-   OpenStreetMap knows: views and stairways (stairs, viewpoints, high ground),
-   trees and gardens (mapped trees, park edges), architecture (historic and
-   landmark features nearby), people and energy (cafes, restaurants, shops).
-   Busy roads lose points. Trees and shopfronts are counted separately for the
-   left and right side.
+   map data: views and stairways (stairs, viewpoints, the shoreline, high
+   ground), trees and gardens (city tree records, park edges), architecture
+   (historic and landmark features nearby), people and energy (cafes,
+   restaurants, shops). A block's best quality counts for more than its
+   average, quiet street types start with some credit, and busy roads lose
+   points. Trees and shopfronts are counted separately for the left and right
+   side.
 3. **Community score.** Three kinds of vote feed in: A-versus-B matchups (Elo),
    star ratings after a walk, and thumbs on the map. The final score starts at
    the map-data score and moves toward the community's as votes arrive; four
@@ -61,8 +63,9 @@ npm run build && npm start
    you asked for.
 6. **Side of the street.** Each block is scored per side: trees and shopfronts
    on that side, which side walkers said was nicer, and sun or shade (sunny
-   side when it is under 17°C, shady side over 23°C). Crossing has a small
-   cost, so the route does not zigzag for marginal gains.
+   side when it is under 17°C, shady side over 23°C, ignored under heavy cloud).
+   Crossing has a cost and short blocks count for less, so the route does not
+   zigzag for marginal gains. Stairways and paths have no side.
 
 ## Joining and voting
 

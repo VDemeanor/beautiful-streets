@@ -277,13 +277,14 @@ export function buildBlocks(elements: OsmElement[], extraTrees: LngLat[] = []): 
     const per100 = 100 / Math.max(block.len, 20);
     const park = c.park > 0 ? 0.45 : 0;
     const prior: Prior = {
-      green: clamp01(squash((c.tree[0] + c.tree[1]) * per100, 6) + park),
+      // With city records a typical block has several trees; only a real canopy should approach 1.
+      green: clamp01(squash((c.tree[0] + c.tree[1]) * per100, 14) + park),
       energy: squash((c.poi[0] + c.poi[1]) * per100, 4),
       arch: clamp01(squash(c.historic, 2) + (block.highway === 'living_street' ? 0.15 : 0)),
       views: clamp01((block.highway === 'steps' ? 0.55 : 0) + (c.view > 0 ? 0.5 : 0)),
       traffic: TRAFFIC[block.highway] ?? 0,
-      L: { green: squash(c.tree[0] * per100, 3), energy: squash(c.poi[0] * per100, 2) },
-      R: { green: squash(c.tree[1] * per100, 3), energy: squash(c.poi[1] * per100, 2) },
+      L: { green: squash(c.tree[0] * per100, 7), energy: squash(c.poi[0] * per100, 2) },
+      R: { green: squash(c.tree[1] * per100, 7), energy: squash(c.poi[1] * per100, 2) },
     };
     block.prior = prior;
   }
