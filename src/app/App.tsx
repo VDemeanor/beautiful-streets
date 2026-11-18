@@ -6,6 +6,7 @@ import type { Feature, FeatureCollection } from 'geojson';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as SunCalc from 'suncalc';
 import { haversine } from '@/lib/geo';
+import { startBirds } from './birds';
 import { Flight, RIGS, type FlightState } from './flight';
 import { applySun, CAMERA_3D, installScene, installTrees, setSceneMode, sunOnScreen, type Sun } from './scene';
 import type { LngLat, Route, RouteLeg, Side, WalkContext } from '@/lib/types';
@@ -83,6 +84,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const startMarker = useRef<maplibregl.Marker | null>(null);
   const panelEl = useRef<HTMLDivElement>(null);
+  const birdsEl = useRef<HTMLCanvasElement>(null);
   const crumbs = useRef<maplibregl.Marker[]>([]);
   const [mapReady, setMapReady] = useState(false);
 
@@ -367,6 +369,12 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     }
   }, [mapReady, tab, duel]);
 
+  // Gulls over the city, in 3D only.
+  useEffect(() => {
+    if (!mapReady || !threeD || !birdsEl.current || calm()) return;
+    return startBirds(mapRef.current!, birdsEl.current);
+  }, [mapReady, threeD]);
+
   // Flat or 3D.
   useEffect(() => {
     if (mapReady) setSceneMode(mapRef.current!, threeD, scores);
@@ -562,6 +570,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         {sunSpot && (
           <div className={`sun ${skyPhase}${sunSpot.above ? ' above' : ''}`} style={{ left: sunSpot.x, top: sunSpot.y }} aria-hidden="true" />
         )}
+        <canvas ref={birdsEl} className="birds" aria-hidden="true" />
         {threeD && <div className="grade" aria-hidden="true" />}
         {film && <div className="bars" aria-hidden="true" />}
         {film && film.cuts > 0 && <div key={`cut-${film.cuts}`} className="cut" aria-hidden="true" />}

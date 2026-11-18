@@ -1,6 +1,7 @@
 import * as maplibregl from 'maplibre-gl';
 import type { Feature, FeatureCollection } from 'geojson';
 import type { LngLat } from '@/lib/types';
+import { brickSkin, concreteSkin, glassSkin, houseSkin, roofSkin, SKIN_SCALE } from './textures';
 
 /**
  * The 3D scene: terrain, painted buildings with windows and roofs, block trees,
@@ -9,45 +10,17 @@ import type { LngLat } from '@/lib/types';
 
 export const CAMERA_3D = { pitch: 62, bearing: -18 };
 
-/** House colours borrowed from San Francisco's painted Victorians and stucco flats. */
-const WALLS = ['#f3dcc6', '#ead0b0', '#dbe6de', '#f6e9b8', '#cddbea', '#f1c9bd', '#e7e1d4', '#d3e3c6', '#e9d4e0', '#c9e0e0'];
-// Mostly pale flat roofs, with the odd terracotta one.
-const ROOFS = ['#ddd7cd', '#cdd2d6', '#e4d9c7', '#d2d9d1', '#c99a80'];
+/** Muted paint colours of San Francisco houses: creams, greys, sage, the odd salmon or blue. */
+const WALLS = ['#e7e0d2', '#d8ccb7', '#c8d1cd', '#e3d5a9', '#bcc6d2', '#d9b7a5', '#d6d3cd', '#b8c2a8', '#cab6c0', '#eeeae2'];
+/** Mid-rise apartment blocks: two brick, one concrete. */
+const MID = ['#a5694f', '#8f5b4a', '#bdb8ae'];
+const BRICK: [number, number, number][] = [[166, 104, 80], [142, 92, 76]];
+/** Towers: blue-grey and green-grey glass. */
+const GLASS: [number, number, number][] = [[104, 128, 146], [112, 136, 134]];
+const GLASS_FAR = ['#7890a0', '#809896'];
+/** Flat roofs: tar and gravel greys, a pale membrane, one terracotta. */
+const ROOFS = ['#8f8c86', '#a9a59d', '#c9c6be', '#77756f', '#a8826c'];
 const N = WALLS.length;
-
-/** A square of facade: three floors of three windows with sills, lintels and a cornice line. */
-function wallImage(color: string): { width: number; height: number; data: Uint8Array } {
-  // Drawn at double resolution so windows stay crisp when the camera is at street level.
-  const size = 96;
-  const scale = 2;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = size * scale;
-  const g = cv.getContext('2d')!;
-  g.scale(scale, scale);
-  g.fillStyle = color;
-  g.fillRect(0, 0, size, size);
-  const cell = size / 3;
-  for (let row = 0; row < 3; row++) {
-    for (let col = 0; col < 3; col++) {
-      const x = col * cell + 9;
-      const y = row * cell + 7;
-      g.fillStyle = 'rgba(255,255,255,0.55)'; // frame
-      g.fillRect(x - 1.5, y - 1.5, 17, 20);
-      g.fillStyle = 'rgba(38,58,84,0.78)'; // glass
-      g.fillRect(x, y, 14, 17);
-      g.fillStyle = 'rgba(190,220,240,0.5)'; // sky reflected in the top pane
-      g.fillRect(x, y, 14, 5);
-      g.fillStyle = 'rgba(255,255,255,0.6)'; // mullion
-      g.fillRect(x + 6.5, y, 1, 17);
-      g.fillStyle = 'rgba(0,0,0,0.16)'; // sill shadow
-      g.fillRect(x - 2, y + 18.5, 18, 2);
-    }
-    g.fillStyle = 'rgba(0,0,0,0.10)'; // floor line
-    g.fillRect(0, (row + 1) * cell - 1.5, size, 1.5);
-  }
-  const d = g.getImageData(0, 0, size * scale, size * scale);
-  return { width: size * scale, height: size * scale, data: new Uint8Array(d.data.buffer) };
-}
 
 /** Which palette entry a building gets: stable per building, varied between neighbours. */
 const pick = (n: number) => ['%', ['floor', ['/', ['to-number', ['id'], 0], 10]], n];
@@ -85,14 +58,29 @@ export function installScene(map: maplibregl.Map) {
   }
 
   if (map.getSource('openmaptiles')) {
-    WALLS.forEach((c, i) => {
-      if (!map.hasImage(`bs-wall-${i}`)) map.addImage(`bs-wall-${i}`, wallImage(c), { pixelRatio: 2 });
-    });
-    // Heights snap to 3 m storeys so buildings read as stacked blocks.
+    const add = (name: string, skin: { width: number; height: number; data: Uint8Array }) => {
+      if (!map.hasImage(name)) map.addImage(name, skin, { pixelRatio: SKIN_SCALE });
+    };
+    // Every third house is wood siding; the rest are stucco.
+    WALLS.forEach((c, i) => add(`bs-wall-${i}`, houseSkin(c, 100 + i, i % 3 === 1)));
+    BRICK.forEach((c, i) => add(`bs-mid-${i}`, brickSkin(c, 200 + i)));
+    add('bs-mid-2', concreteSkin(MID[2], 202));
+    GLASS.forEach((c, i) => add(`bs-glass-${i}`, glassSkin(c, 300 + i)));
+    ROOFS.forEach((c, i) => add(`bs-roof-${i}`, roofSkin(c, 400 + i)));
+
+    // Heights snap to 3 m storeys so floors line up with the window rows.
     const height = ['*', 3, ['ceil', ['/', ['coalesce', ['get', 'render_height'], 9], 3]]];
     const base = ['coalesce', ['get', 'render_min_height'], 0];
-    // From far away the window pattern turns to grey mush, so distant views
-    // use the plain wall colours and the windows appear as you come closer.
+    const tall = ['>', ['coalesce', ['get', 'render_height'], 9], 42];
+    const mid = ['>', ['coalesce', ['get', 'render_height'], 9], 19];
+    const numbered = (prefix: string, n: number) => ['concat', prefix, ['to-string', pick(n)]];
+    // Houses get painted walls, apartment blocks brick or concrete, towers glass.
+    const skin = ['case', tall, numbered('bs-glass-', GLASS.length), mid, numbered('bs-mid-', MID.length), numbered('bs-wall-', N)];
+    const list = (colours: string[], n: number) => ['match', pick(n), ...colours.slice(0, n - 1).flatMap((c, i) => [i, c]), colours[n - 1]];
+    const flat = ['case', tall, list(GLASS_FAR, GLASS_FAR.length), mid, list(MID, MID.length), list(WALLS, N)];
+
+    // From far away any window pattern turns to grey mush, so distant views
+    // use plain wall colours and the detail appears as you come closer.
     map.addLayer(
       {
         id: 'bs-buildings-far',
@@ -104,7 +92,7 @@ export function installScene(map: maplibregl.Map) {
         paint: {
           'fill-extrusion-height': height as never,
           'fill-extrusion-base': base as never,
-          'fill-extrusion-color': ['match', pick(N), ...WALLS.slice(0, N - 1).flatMap((c, i) => [i, c]), WALLS[N - 1]] as never,
+          'fill-extrusion-color': flat as never,
           'fill-extrusion-vertical-gradient': true,
         },
       },
@@ -120,24 +108,42 @@ export function installScene(map: maplibregl.Map) {
         paint: {
           'fill-extrusion-height': height as never,
           'fill-extrusion-base': base as never,
-          'fill-extrusion-pattern': ['concat', 'bs-wall-', ['to-string', pick(N)]] as never,
+          'fill-extrusion-pattern': skin as never,
           'fill-extrusion-vertical-gradient': true,
         },
       },
       'duel',
     );
-    // A thin cap in a roof colour hides the window pattern on top and adds a parapet edge.
+    // A parapet-height cap textured as a flat roof, which also covers the wall
+    // pattern that would otherwise show on top.
+    map.addLayer(
+      {
+        id: 'bs-roofs-far',
+        type: 'fill-extrusion',
+        source: 'openmaptiles',
+        'source-layer': 'building',
+        minzoom: 13,
+        maxzoom: 15.6,
+        paint: {
+          'fill-extrusion-base': height as never,
+          'fill-extrusion-height': ['+', height, 0.9] as never,
+          'fill-extrusion-color': list(ROOFS, ROOFS.length) as never,
+          'fill-extrusion-vertical-gradient': false,
+        },
+      },
+      'duel',
+    );
     map.addLayer(
       {
         id: 'bs-roofs',
         type: 'fill-extrusion',
         source: 'openmaptiles',
         'source-layer': 'building',
-        minzoom: 13,
+        minzoom: 15.6,
         paint: {
           'fill-extrusion-base': height as never,
           'fill-extrusion-height': ['+', height, 0.9] as never,
-          'fill-extrusion-color': ['match', pick(ROOFS.length), 0, ROOFS[0], 1, ROOFS[1], 2, ROOFS[2], 3, ROOFS[3], ROOFS[4]] as never,
+          'fill-extrusion-pattern': numbered('bs-roof-', ROOFS.length) as never,
           'fill-extrusion-vertical-gradient': false,
         },
       },
@@ -154,7 +160,7 @@ export function installScene(map: maplibregl.Map) {
         paint: {
           'fill-extrusion-base': base as never,
           'fill-extrusion-height': ['+', base, 0.6] as never,
-          'fill-extrusion-color': '#7d7872',
+          'fill-extrusion-color': '#6f6a64',
         },
       },
       'duel',
@@ -195,13 +201,13 @@ export function installTrees(map: maplibregl.Map, trees: LngLat[]) {
   );
 }
 
-const SCENE_LAYERS = ['bs-buildings', 'bs-buildings-far', 'bs-roofs', 'bs-ground', 'bs-trees', 'bs-trunks'];
+const SCENE_LAYERS = ['bs-buildings', 'bs-buildings-far', 'bs-roofs', 'bs-roofs-far', 'bs-centerline', 'bs-ground', 'bs-trees', 'bs-trunks'];
 /** The base map's own building layers, which ours replace in 3D. */
 const STYLE_3D = ['building-3d'];
 const STYLE_FLAT = ['building'];
 
 /**
- * Dress the base map for the camera: relief shading and a deeper bay.
+ * Add what the base map lacks for the camera: relief shading and road markings.
  */
 function dressBaseMap(map: maplibregl.Map) {
   if (map.getSource('bs-dem') && !map.getSource('bs-relief')) {
@@ -227,14 +233,75 @@ function dressBaseMap(map: maplibregl.Map) {
       /* relief is decoration */
     }
   }
+  if (map.getSource('openmaptiles') && !map.getLayer('bs-centerline')) {
+    // The yellow line down the middle of the bigger streets.
+    map.addLayer(
+      {
+        id: 'bs-centerline',
+        type: 'line',
+        source: 'openmaptiles',
+        'source-layer': 'transportation',
+        minzoom: 15,
+        filter: ['all', ['==', ['geometry-type'], 'LineString'], ['match', ['get', 'class'], ['primary', 'secondary', 'tertiary', 'trunk'], true, false]],
+        paint: {
+          'line-color': '#d8b648',
+          'line-width': ['interpolate', ['exponential', 1.6], ['zoom'], 15, 0.5, 19, 2.6],
+          'line-opacity': 0.9,
+        },
+      },
+      map.getLayer('blocks') ? 'blocks' : undefined,
+    );
+  }
+}
+
+/** Paint the base map as the real thing: asphalt, concrete, grass. Returns what to set. */
+function realGround(map: maplibregl.Map): [string, string, unknown][] {
+  const out: [string, string, unknown][] = [];
   for (const layer of map.getStyle().layers ?? []) {
+    const id = layer.id;
     const sl = (layer as { 'source-layer'?: string })['source-layer'];
-    if (layer.type === 'fill' && sl === 'water') map.setPaintProperty(layer.id, 'fill-color', '#6fa8c7');
+    if (id.startsWith('bs-')) continue;
+    if (layer.type === 'background') out.push([id, 'background-color', '#c4bfb2']);
+    else if (layer.type === 'fill') {
+      if (sl === 'water') out.push([id, 'fill-color', '#5f9cc0']);
+      else if (id === 'landuse_residential') out.push([id, 'fill-color', '#c9c4b7']);
+      else if (id === 'park') out.push([id, 'fill-color', '#7fa867']);
+      else if (id === 'landcover_grass' || id === 'landuse_pitch' || id === 'landuse_track') out.push([id, 'fill-color', '#88b06d']);
+      else if (id === 'landcover_wood') out.push([id, 'fill-color', '#5f8f55']);
+      else if (id === 'landcover_sand') out.push([id, 'fill-color', '#dccfa5']);
+      else if (id === 'landuse_school' || id === 'landuse_hospital' || id === 'landuse_cemetery') out.push([id, 'fill-color', '#bfc2aa']);
+    } else if (layer.type === 'line' && sl === 'transportation' && !id.includes('rail')) {
+      // Casings become the concrete kerb and sidewalk edge; the road itself is asphalt.
+      if (id.includes('casing')) out.push([id, 'line-color', '#aeaaa0']);
+      else if (id.includes('path_pedestrian')) out.push([id, 'line-color', '#bdb8ab']);
+      else if (id.includes('motorway') || id.includes('trunk_primary')) out.push([id, 'line-color', '#46494d']);
+      else if (id.includes('secondary_tertiary') || id.includes('link')) out.push([id, 'line-color', '#4d5054']);
+      else if (id.includes('service_track')) out.push([id, 'line-color', '#64676a']);
+      else out.push([id, 'line-color', '#56595d']);
+    } else if (layer.type === 'line' && sl === 'park') out.push([id, 'line-color', '#6f9a5a']);
+  }
+  return out;
+}
+
+/** The base map's own colours, remembered so the flat map can have them back. */
+const originals = new WeakMap<maplibregl.Map, [string, string, unknown][]>();
+
+function paintGround(map: maplibregl.Map, real: boolean) {
+  const wanted = realGround(map);
+  if (!originals.has(map)) originals.set(map, wanted.map(([id, prop]) => [id, prop, map.getPaintProperty(id, prop as never)]));
+  for (const [id, prop, value] of real ? wanted : originals.get(map)!) {
+    try {
+      map.setPaintProperty(id, prop as never, value as never);
+    } catch {
+      /* a layer this base map does not have */
+    }
   }
 }
 
 export function setSceneMode(map: maplibregl.Map, on: boolean, scores = false) {
   dressBaseMap(map);
+  // White roads belong on a map, not in a view of the city, so 3D repaints the ground.
+  paintGround(map, on);
   // In 3D the picture leads: no labels, and street scores only when asked for.
   // Flat is the working map, with both.
   for (const layer of map.getStyle().layers ?? []) {
