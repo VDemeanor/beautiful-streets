@@ -127,7 +127,9 @@ function set3d(map: maplibregl.Map, on: boolean) {
   }
   if (map.getLayer('bs-buildings')) map.setLayoutProperty('bs-buildings', 'visibility', on ? 'visible' : 'none');
   if (map.getLayer('building')) map.setLayoutProperty('building', 'visibility', on ? 'none' : 'visible');
-  map.easeTo(on ? { ...CAMERA_3D, duration: 900 } : { pitch: 0, bearing: 0, duration: 900 });
+  // Only tilt or flatten; leave position and zoom to whoever set them.
+  const target = on ? CAMERA_3D : { pitch: 0, bearing: 0 };
+  if (Math.abs(map.getPitch() - target.pitch) > 1) map.easeTo({ ...target, duration: 900 });
 }
 
 /** Two curbs seen from above, heading up the page; the dot is where you walk. */
@@ -214,6 +216,8 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         center: [-122.418, 37.8],
         zoom: 14,
         maxPitch: 75,
+        pitch: CAMERA_3D.pitch,
+        bearing: CAMERA_3D.bearing,
         attributionControl: { compact: true, customAttribution: '© OpenStreetMap contributors' },
       });
       map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
@@ -342,10 +346,14 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     if (legs.length && tab === 'walk') {
       const bounds = new maplibregl.LngLatBounds();
       for (const l of legs) for (const c of l.coords) bounds.extend(c);
-      // A tilted camera over terrain needs extra room, so fit flat and back off a little.
-      const cam = map.cameraForBounds(bounds, { padding: 40 });
-      const tilted = map.getPitch() > 20;
-      map.easeTo({ center: bounds.getCenter(), zoom: (cam?.zoom ?? 15) - (tilted ? 0.9 : 0), duration: 800 });
+      // Work out the zoom that fits the route in the map's box, then back off a
+      // little when tilted, because a tilted camera over hills needs extra room.
+      const box = map.getContainer().getBoundingClientRect();
+      const lngSpan = Math.max(bounds.getEast() - bounds.getWest(), 1e-4);
+      const latSpan = Math.max(bounds.getNorth() - bounds.getSouth(), 1e-4) / Math.cos((bounds.getCenter().lat * Math.PI) / 180);
+      const fit = (px: number, span: number) => Math.log2((Math.max(px - 80, 100) * 360) / (span * 512));
+      const zoom = Math.min(fit(box.width, lngSpan), fit(box.height, latSpan), 17) - (map.getPitch() > 20 ? 0.7 : 0);
+      map.easeTo({ center: bounds.getCenter(), zoom, duration: 800 });
     }
   }, [mapReady, plan, tab]);
 
