@@ -204,7 +204,10 @@ export default function App({ mapStyle }: { mapStyle: string }) {
       for (const b of bs) for (const [x, y] of b.coords) {
         w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y);
       }
-      setStart((cur) => cur ?? [(w + e) / 2, (s + n) / 2]);
+      // Start on Russian Hill when the map covers it; otherwise the middle of the map.
+      const home: LngLat = [-122.4194, 37.8021];
+      const covered = home[0] > w && home[0] < e && home[1] > s && home[1] < n;
+      setStart((cur) => cur ?? (covered ? home : [(w + e) / 2, (s + n) / 2]));
       mapRef.current?.fitBounds([[w, s], [e, n]], { padding: 24, duration: 0 });
     });
   }, [loadWorld]);
