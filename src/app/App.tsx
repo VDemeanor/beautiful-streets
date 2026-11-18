@@ -4,6 +4,7 @@ import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource, StyleSpecification } from 'maplibre-gl';
 import type { Feature, FeatureCollection } from 'geojson';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { bearing as bearingBetween, haversine } from '@/lib/geo';
 import type { LngLat, Route, RouteLeg, Side, WalkContext } from '@/lib/types';
 
 interface MapBlock {
@@ -61,6 +62,74 @@ const line = (coords: LngLat[], properties: Record<string, unknown>): Feature =>
   geometry: { type: 'LineString', coordinates: coords },
 });
 
+const CAMERA_3D = { pitch: 58, bearing: -18 };
+
+/**
+ * Turn the flat map into a blocky 3D city: real terrain, and every building
+ * extruded with its height snapped to 3 m steps, like stacked blocks.
+ * Each part is optional, so a basemap without buildings or an unreachable
+ * terrain service leaves the rest working.
+ */
+function add3d(map: maplibregl.Map) {
+  try {
+    map.addSource('bs-dem', {
+      type: 'raster-dem',
+      tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+      tileSize: 256,
+      maxzoom: 15,
+      encoding: 'terrarium',
+      attribution: 'Terrain: Mapzen, USGS',
+    });
+  } catch {
+    /* terrain is optional */
+  }
+  if (map.getSource('openmaptiles')) {
+    const height = ['*', 3, ['ceil', ['/', ['coalesce', ['get', 'render_height'], 9], 3]]];
+    map.addLayer(
+      {
+        id: 'bs-buildings',
+        type: 'fill-extrusion',
+        source: 'openmaptiles',
+        'source-layer': 'building',
+        minzoom: 13,
+        paint: {
+          'fill-extrusion-height': height as never,
+          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+          // Sandstone low-rises, pale stucco mid-rises, blue-grey towers.
+          'fill-extrusion-color': ['step', height as never, '#eadfca', 10, '#dccba9', 19, '#cdbf9f', 40, '#aab7bd', 90, '#8497a3'],
+          'fill-extrusion-vertical-gradient': true,
+          'fill-extrusion-opacity': 0.96,
+        },
+      },
+      // Above the street lines, below the matchup and route highlights.
+      'duel',
+    );
+  }
+  try {
+    map.setSky({
+      'sky-color': '#9cc3dc',
+      'horizon-color': '#e9eef0',
+      'fog-color': '#e6ecea',
+      'sky-horizon-blend': 0.6,
+      'horizon-fog-blend': 0.6,
+      'fog-ground-blend': 0.35,
+    });
+  } catch {
+    /* sky is decoration */
+  }
+}
+
+function set3d(map: maplibregl.Map, on: boolean) {
+  try {
+    map.setTerrain(on && map.getSource('bs-dem') ? { source: 'bs-dem', exaggeration: 1.4 } : null);
+  } catch {
+    /* terrain is optional */
+  }
+  if (map.getLayer('bs-buildings')) map.setLayoutProperty('bs-buildings', 'visibility', on ? 'visible' : 'none');
+  if (map.getLayer('building')) map.setLayoutProperty('building', 'visibility', on ? 'none' : 'visible');
+  map.easeTo(on ? { ...CAMERA_3D, duration: 900 } : { pitch: 0, bearing: 0, duration: 900 });
+}
+
 /** Two curbs seen from above, heading up the page; the dot is where you walk. */
 function SideGlyph({ side }: { side: Side }) {
   return (
@@ -89,6 +158,9 @@ export default function App({ mapStyle }: { mapStyle: string }) {
   const [selected, setSelected] = useState<MapBlock | null>(null);
   const [needJoin, setNeedJoin] = useState(false);
   const [toast, setToast] = useState('');
+  const [threeD, setThreeD] = useState(true);
+  const [flying, setFlying] = useState(false);
+  const flight = useRef(0);
 
   const [start, setStart] = useState<LngLat | null>(null);
   const [minutes, setMinutes] = useState(45);
@@ -141,9 +213,10 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         style,
         center: [-122.418, 37.8],
         zoom: 14,
+        maxPitch: 75,
         attributionControl: { compact: true, customAttribution: '© OpenStreetMap contributors' },
       });
-      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+      map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
       map.addControl(new maplibregl.GeolocateControl({ trackUserLocation: false }), 'top-right');
       map.on('load', () => {
         if (!map) return;
@@ -186,6 +259,9 @@ export default function App({ mapStyle }: { mapStyle: string }) {
           layout: { 'line-cap': 'round', 'line-join': 'round' },
           paint: { 'line-color': '#c0362c', 'line-width': 4, 'line-offset': ['get', 'offset'] },
         });
+        add3d(map);
+        // Handy when debugging from the browser console.
+        (window as unknown as { __bsMap?: maplibregl.Map }).__bsMap = map;
         setMapReady(true);
       });
       mapRef.current = map;
@@ -288,6 +364,59 @@ export default function App({ mapStyle }: { mapStyle: string }) {
       map.fitBounds(bounds, { padding: 60, maxZoom: 16 });
     }
   }, [mapReady, tab, duel]);
+
+  // Flat or 3D.
+  useEffect(() => {
+    if (mapReady) set3d(mapRef.current!, threeD);
+  }, [mapReady, threeD]);
+
+  const stopFlight = useCallback(() => {
+    cancelAnimationFrame(flight.current);
+    flight.current = 0;
+    setFlying(false);
+  }, []);
+
+  /** Fly the camera along the walk at street level, looking where you would be heading. */
+  const flyRoute = useCallback(() => {
+    const map = mapRef.current;
+    const legs = plan?.route.legs;
+    if (!map || !legs?.length) return;
+    const pts: LngLat[] = [];
+    for (const l of legs) for (const c of l.coords) if (!pts.length || pts[pts.length - 1][0] !== c[0] || pts[pts.length - 1][1] !== c[1]) pts.push(c);
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + haversine(pts[i - 1], pts[i]));
+    const total = cum[cum.length - 1];
+    if (total <= 0) return;
+    const at = (d: number): LngLat => {
+      const x = Math.max(0, Math.min(total, d));
+      let i = 1;
+      while (i < cum.length - 1 && cum[i] < x) i++;
+      const f = cum[i] === cum[i - 1] ? 0 : (x - cum[i - 1]) / (cum[i] - cum[i - 1]);
+      return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f];
+    };
+    // About 55 m of walk per second of flight, between 20 and 75 seconds in all.
+    const duration = Math.max(20000, Math.min(75000, (total / 55) * 1000));
+    setThreeD(true);
+    setFlying(true);
+    let heading = bearingBetween(at(0), at(40));
+    const began = performance.now();
+    const frame = (now: number) => {
+      const t = (now - began) / duration;
+      if (t >= 1) {
+        stopFlight();
+        return;
+      }
+      const d = t * total;
+      const want = bearingBetween(at(d), at(d + 45));
+      // Turn the camera gradually so corners sweep instead of snapping.
+      heading += (((want - heading + 540) % 360) - 180) * 0.06;
+      map.jumpTo({ center: at(d), bearing: heading, pitch: 66, zoom: 17.2 });
+      flight.current = requestAnimationFrame(frame);
+    };
+    flight.current = requestAnimationFrame(frame);
+  }, [plan, stopFlight]);
+
+  useEffect(() => () => cancelAnimationFrame(flight.current), []);
 
   useEffect(() => {
     if (!toast) return;
@@ -394,6 +523,9 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     <div className="shell">
       <div className="map">
         <div ref={mapEl} className="map-canvas" />
+        <button className="btn small view-toggle" aria-pressed={threeD} onClick={() => { stopFlight(); setThreeD((v) => !v); }}>
+          {threeD ? '3D on' : '3D off'}
+        </button>
         {source === 'demo' && <div className="banner">Demo grid: these streets and scores are invented. Import real streets to replace them.</div>}
         {loadError && <div className="banner">{loadError}</div>}
         {toast && <div className="banner" role="status">{toast}</div>}
@@ -515,7 +647,8 @@ export default function App({ mapStyle }: { mapStyle: string }) {
                     ) : (
                       <button className="btn primary" onClick={() => setRating(true)}>I walked it: rate the streets</button>
                     )}
-                    <button className="btn" onClick={() => { setPlan(null); setRating(false); }}>Design another</button>
+                    <button className="btn" onClick={flying ? stopFlight : flyRoute}>{flying ? 'Stop flight' : 'Fly the walk'}</button>
+                    <button className="btn" onClick={() => { stopFlight(); setPlan(null); setRating(false); }}>Design another</button>
                   </div>
                 </>
               )}
