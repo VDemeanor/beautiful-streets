@@ -11,15 +11,19 @@ export const CAMERA_3D = { pitch: 62, bearing: -18 };
 
 /** House colours borrowed from San Francisco's painted Victorians and stucco flats. */
 const WALLS = ['#f3dcc6', '#ead0b0', '#dbe6de', '#f6e9b8', '#cddbea', '#f1c9bd', '#e7e1d4', '#d3e3c6', '#e9d4e0', '#c9e0e0'];
-const ROOFS = ['#9a6b55', '#7d8792', '#a58a6b', '#6f7f74', '#8c7a8a'];
+// Mostly pale flat roofs, with the odd terracotta one.
+const ROOFS = ['#ddd7cd', '#cdd2d6', '#e4d9c7', '#d2d9d1', '#c99a80'];
 const N = WALLS.length;
 
 /** A square of facade: three floors of three windows with sills, lintels and a cornice line. */
 function wallImage(color: string): { width: number; height: number; data: Uint8Array } {
+  // Drawn at double resolution so windows stay crisp when the camera is at street level.
   const size = 96;
+  const scale = 2;
   const cv = document.createElement('canvas');
-  cv.width = cv.height = size;
+  cv.width = cv.height = size * scale;
   const g = cv.getContext('2d')!;
+  g.scale(scale, scale);
   g.fillStyle = color;
   g.fillRect(0, 0, size, size);
   const cell = size / 3;
@@ -41,8 +45,8 @@ function wallImage(color: string): { width: number; height: number; data: Uint8A
     g.fillStyle = 'rgba(0,0,0,0.10)'; // floor line
     g.fillRect(0, (row + 1) * cell - 1.5, size, 1.5);
   }
-  const d = g.getImageData(0, 0, size, size);
-  return { width: size, height: size, data: new Uint8Array(d.data.buffer) };
+  const d = g.getImageData(0, 0, size * scale, size * scale);
+  return { width: size * scale, height: size * scale, data: new Uint8Array(d.data.buffer) };
 }
 
 /** Which palette entry a building gets: stable per building, varied between neighbours. */
@@ -82,7 +86,7 @@ export function installScene(map: maplibregl.Map) {
 
   if (map.getSource('openmaptiles')) {
     WALLS.forEach((c, i) => {
-      if (!map.hasImage(`bs-wall-${i}`)) map.addImage(`bs-wall-${i}`, wallImage(c));
+      if (!map.hasImage(`bs-wall-${i}`)) map.addImage(`bs-wall-${i}`, wallImage(c), { pixelRatio: 2 });
     });
     // Heights snap to 3 m storeys so buildings read as stacked blocks.
     const height = ['*', 3, ['ceil', ['/', ['coalesce', ['get', 'render_height'], 9], 3]]];
@@ -131,7 +135,7 @@ export function installScene(map: maplibregl.Map) {
         paint: {
           'fill-extrusion-base': base as never,
           'fill-extrusion-height': ['+', base, 0.6] as never,
-          'fill-extrusion-color': '#5d5a57',
+          'fill-extrusion-color': '#7d7872',
         },
       },
       'duel',
@@ -142,7 +146,7 @@ export function installScene(map: maplibregl.Map) {
 /** Street trees as little block trees: a brown trunk under a green cube. */
 export function installTrees(map: maplibregl.Map, trees: LngLat[]) {
   if (!trees.length || map.getSource('bs-trees')) return;
-  map.addSource('bs-trees', { type: 'geojson', data: squares(trees, 1.7) });
+  map.addSource('bs-trees', { type: 'geojson', data: squares(trees, 1.45) });
   map.addSource('bs-trunks', { type: 'geojson', data: squares(trees, 0.35) });
   const before = map.getLayer('duel') ? 'duel' : undefined;
   map.addLayer(

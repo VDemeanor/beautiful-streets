@@ -324,9 +324,13 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         const len = haversine(a, b);
         let d = 35 - carry;
         while (d <= len) {
+          // MapLibre positions a marker by transforming its element, so the
+          // animated block has to be a child or the animation would move it away.
           const el = document.createElement('div');
-          el.className = 'crumb';
-          el.style.setProperty('--n', String(crumbs.current.length));
+          const block = document.createElement('div');
+          block.className = 'crumb';
+          block.style.setProperty('--n', String(crumbs.current.length));
+          el.appendChild(block);
           const f = d / len;
           crumbs.current.push(
             new maplibregl.Marker({ element: el, opacityWhenCovered: '1' })
@@ -392,6 +396,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     cancelAnimationFrame(flight.current);
     flight.current = 0;
     mapRef.current?.stop();
+    mapRef.current?.setVerticalFieldOfView?.(36.87);
     walker.current?.remove();
     walker.current = null;
     setFlying(false);
@@ -454,6 +459,10 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     const from = { center: map.getCenter(), zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() };
     const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
     const turn = (a: number, b: number, t: number) => a + ((((b - a + 540) % 360) - 180) * t);
+    // A wider lens at street level shows more sky, and the sun when it is ahead.
+    const lens = (fov: number) => map.setVerticalFieldOfView?.(fov);
+    const NORMAL_LENS = 36.87;
+    const WIDE_LENS = 54;
     const began = performance.now();
 
     const frame = (now: number) => {
@@ -462,6 +471,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         // Act one: swoop from wherever the camera is down to street level at the start.
         const t = ease(elapsed / introMs);
         const p0 = at(0);
+        lens(NORMAL_LENS + (WIDE_LENS - NORMAL_LENS) * t);
         map.jumpTo({
           center: [from.center.lng + (p0[0] - from.center.lng) * t, from.center.lat + (p0[1] - from.center.lat) * t],
           zoom: from.zoom + (17.6 - from.zoom) * t,
@@ -470,6 +480,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         });
       } else if (elapsed < introMs + travelMs) {
         // Act two: walk it.
+        lens(WIDE_LENS);
         const d = ((elapsed - introMs) / travelMs) * total;
         const here = at(d);
         const want = bearingBetween(here, at(d + 45));
@@ -483,6 +494,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
           setFinished(true);
         }
         const t = (elapsed - introMs - travelMs) / orbitMs;
+        lens(WIDE_LENS + (NORMAL_LENS - WIDE_LENS) * ease(t));
         map.jumpTo({ center: at(total), bearing: heading + 360 * ease(t), pitch: 80 - 14 * ease(t), zoom: 17.6 - 0.9 * ease(t) });
       } else {
         cancelAnimationFrame(flight.current);
@@ -490,6 +502,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         walker.current?.remove();
         walker.current = null;
         setFlying(false);
+        lens(NORMAL_LENS);
         const view = overview();
         if (view) map.easeTo({ ...view, ...CAMERA_3D, duration: calm() ? 0 : 2200 });
         window.setTimeout(() => setFinished(false), 4000);
