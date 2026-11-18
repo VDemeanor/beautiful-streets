@@ -181,7 +181,49 @@ const SCENE_LAYERS = ['bs-buildings', 'bs-roofs', 'bs-ground', 'bs-trees', 'bs-t
 const STYLE_3D = ['building-3d'];
 const STYLE_FLAT = ['building'];
 
-export function setSceneMode(map: maplibregl.Map, on: boolean) {
+/**
+ * Dress the base map for the camera: relief shading and a deeper bay.
+ */
+function dressBaseMap(map: maplibregl.Map) {
+  if (map.getSource('bs-dem') && !map.getSource('bs-relief')) {
+    try {
+      // Hillshade needs its own copy of the elevation source.
+      map.addSource('bs-relief', {
+        type: 'raster-dem',
+        tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        maxzoom: 15,
+        encoding: 'terrarium',
+      });
+      map.addLayer(
+        {
+          id: 'bs-relief',
+          type: 'hillshade',
+          source: 'bs-relief',
+          paint: { 'hillshade-exaggeration': 0.45, 'hillshade-shadow-color': '#3b4a5a', 'hillshade-highlight-color': '#fff6e0', 'hillshade-accent-color': '#5a6b5a' },
+        },
+        map.getLayer('blocks') ? 'blocks' : undefined,
+      );
+    } catch {
+      /* relief is decoration */
+    }
+  }
+  for (const layer of map.getStyle().layers ?? []) {
+    const sl = (layer as { 'source-layer'?: string })['source-layer'];
+    if (layer.type === 'fill' && sl === 'water') map.setPaintProperty(layer.id, 'fill-color', '#6fa8c7');
+  }
+}
+
+export function setSceneMode(map: maplibregl.Map, on: boolean, scores = false) {
+  dressBaseMap(map);
+  // In 3D the picture leads: no labels, and street scores only when asked for.
+  // Flat is the working map, with both.
+  for (const layer of map.getStyle().layers ?? []) {
+    if (layer.type === 'symbol') map.setLayoutProperty(layer.id, 'visibility', on ? 'none' : 'visible');
+  }
+  if (map.getLayer('blocks')) map.setPaintProperty('blocks', 'line-opacity', on ? (scores ? 0.8 : 0) : 0.85);
+  if (map.getLayer('bs-relief')) map.setLayoutProperty('bs-relief', 'visibility', on ? 'visible' : 'none');
+  map.setMinZoom(on ? 12.6 : 11);
   try {
     map.setTerrain(on && map.getSource('bs-dem') ? { source: 'bs-dem', exaggeration: 1.35 } : null);
   } catch {
@@ -253,9 +295,10 @@ export function applySun(map: maplibregl.Map, sun: Sun) {
       'sky-color': c.sky,
       'horizon-color': c.horizon,
       'fog-color': c.fog,
-      'sky-horizon-blend': 0.7,
-      'horizon-fog-blend': 0.7,
-      'fog-ground-blend': 0.25,
+      // Plenty of haze, so the far city melts into the sky instead of ending in a hard edge.
+      'sky-horizon-blend': 0.8,
+      'horizon-fog-blend': 0.9,
+      'fog-ground-blend': 0.55,
     });
   } catch {
     /* sky is decoration */

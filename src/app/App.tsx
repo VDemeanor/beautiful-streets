@@ -5,7 +5,8 @@ import type { GeoJSONSource, StyleSpecification } from 'maplibre-gl';
 import type { Feature, FeatureCollection } from 'geojson';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as SunCalc from 'suncalc';
-import { bearing as bearingBetween, haversine } from '@/lib/geo';
+import { haversine } from '@/lib/geo';
+import { Flight, RIGS, type FlightState } from './flight';
 import { applySun, CAMERA_3D, installScene, installTrees, setSceneMode, sunOnScreen, type Sun } from './scene';
 import type { LngLat, Route, RouteLeg, Side, WalkContext } from '@/lib/types';
 
@@ -94,14 +95,12 @@ export default function App({ mapStyle }: { mapStyle: string }) {
   const [needJoin, setNeedJoin] = useState(false);
   const [toast, setToast] = useState('');
   const [threeD, setThreeD] = useState(true);
-  const [flying, setFlying] = useState(false);
-  const flight = useRef(0);
-  const walker = useRef<maplibregl.Marker | null>(null);
-  const finishedRef = useRef(false);
+  const flightRef = useRef<Flight | null>(null);
+  const [film, setFilm] = useState<FlightState | null>(null);
+  const [scores, setScores] = useState(false);
   const introFor = useRef<unknown>(null);
   const [sunSpot, setSunSpot] = useState<{ x: number; y: number; above: boolean } | null>(null);
   const [skyPhase, setSkyPhase] = useState<'night' | 'golden' | 'day'>('day');
-  const [finished, setFinished] = useState(false);
 
   const [start, setStart] = useState<LngLat | null>(null);
   const [minutes, setMinutes] = useState(45);
@@ -208,7 +207,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
           .then((j: { trees: LngLat[] }) => {
             if (!cancelled && map) {
               installTrees(map, j.trees);
-              setSceneMode(map, true);
+              setSceneMode(map, true, false);
             }
           })
           .catch(() => undefined);
@@ -366,8 +365,8 @@ export default function App({ mapStyle }: { mapStyle: string }) {
 
   // Flat or 3D.
   useEffect(() => {
-    if (mapReady) setSceneMode(mapRef.current!, threeD);
-  }, [mapReady, threeD]);
+    if (mapReady) setSceneMode(mapRef.current!, threeD, scores);
+  }, [mapReady, threeD, scores]);
 
   // Where the sun is: at the walk's start time once a walk is designed, otherwise now.
   const sun: Sun = useMemo(() => {
@@ -392,16 +391,6 @@ export default function App({ mapStyle }: { mapStyle: string }) {
 
   const calm = () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  const stopFlight = useCallback(() => {
-    cancelAnimationFrame(flight.current);
-    flight.current = 0;
-    mapRef.current?.stop();
-    mapRef.current?.setVerticalFieldOfView?.(36.87);
-    walker.current?.remove();
-    walker.current = null;
-    setFlying(false);
-  }, []);
-
   /** The camera position that shows the whole walk. */
   const overview = useCallback((): { center: LngLat; zoom: number } | null => {
     const map = mapRef.current;
@@ -419,103 +408,47 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     return { center: [c.lng, c.lat], zoom };
   }, [plan, threeD]);
 
-  /**
-   * Fly the walk in three acts: swoop down to the start, travel the route at
-   * street level looking ahead, then circle the finish before pulling back out.
-   */
-  const flyRoute = useCallback(() => {
+  /** End the film and hand the map back. */
+  const endFilm = useCallback(() => {
+    flightRef.current?.dispose();
+    flightRef.current = null;
+    setFilm(null);
+  }, []);
+
+  /** Start the film of the walk: an establishing shot, the walk itself, and a finale. */
+  const startFilm = useCallback(() => {
     const map = mapRef.current;
-    const legs = plan?.route.legs;
-    if (!map || !legs?.length) return;
-    const pts: LngLat[] = [];
-    for (const l of legs) for (const c of l.coords) if (!pts.length || pts[pts.length - 1][0] !== c[0] || pts[pts.length - 1][1] !== c[1]) pts.push(c);
-    const cum = [0];
-    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + haversine(pts[i - 1], pts[i]));
-    const total = cum[cum.length - 1];
-    if (total <= 0) return;
-    const at = (d: number): LngLat => {
-      const x = Math.max(0, Math.min(total, d));
-      let i = 1;
-      while (i < cum.length - 1 && cum[i] < x) i++;
-      const f = cum[i] === cum[i - 1] ? 0 : (x - cum[i - 1]) / (cum[i] - cum[i - 1]);
-      return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f];
-    };
+    const view = overview();
+    if (!map || !plan || !view) return;
+    flightRef.current?.dispose();
     setThreeD(true);
-    setFlying(true);
-    setFinished(false);
-
-    const orb = document.createElement('div');
-    orb.className = 'walker';
-    orb.innerHTML = '<span class="walker-glow"></span><span class="walker-core"></span>' + Array.from({ length: 5 }, (_, i) => `<i class="spark" style="--i:${i}"></i>`).join('');
-    walker.current?.remove();
-    walker.current = new maplibregl.Marker({ element: orb, opacityWhenCovered: '1' }).setLngLat(at(0)).addTo(map);
-
-    // About 45 m of walk per second, between 25 and 90 seconds in all.
-    const travelMs = Math.max(25000, Math.min(90000, (total / 45) * 1000));
-    const introMs = calm() ? 0 : 2600;
-    const orbitMs = calm() ? 0 : 6000;
-    let heading = bearingBetween(at(0), at(40));
-    const startHeading = heading;
-    const from = { center: map.getCenter(), zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() };
-    const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
-    const turn = (a: number, b: number, t: number) => a + ((((b - a + 540) % 360) - 180) * t);
-    // A wider lens at street level shows more sky, and the sun when it is ahead.
-    const lens = (fov: number) => map.setVerticalFieldOfView?.(fov);
-    const NORMAL_LENS = 36.87;
-    const WIDE_LENS = 54;
-    const began = performance.now();
-
-    const frame = (now: number) => {
-      const elapsed = now - began;
-      if (elapsed < introMs) {
-        // Act one: swoop from wherever the camera is down to street level at the start.
-        const t = ease(elapsed / introMs);
-        const p0 = at(0);
-        lens(NORMAL_LENS + (WIDE_LENS - NORMAL_LENS) * t);
-        map.jumpTo({
-          center: [from.center.lng + (p0[0] - from.center.lng) * t, from.center.lat + (p0[1] - from.center.lat) * t],
-          zoom: from.zoom + (17.6 - from.zoom) * t,
-          pitch: from.pitch + (80 - from.pitch) * t,
-          bearing: turn(from.bearing, startHeading, t),
-        });
-      } else if (elapsed < introMs + travelMs) {
-        // Act two: walk it.
-        lens(WIDE_LENS);
-        const d = ((elapsed - introMs) / travelMs) * total;
-        const here = at(d);
-        const want = bearingBetween(here, at(d + 45));
-        heading += (((want - heading + 540) % 360) - 180) * 0.06;
-        map.jumpTo({ center: here, bearing: heading, pitch: 80, zoom: 17.6 });
-        walker.current?.setLngLat(here);
-      } else if (elapsed < introMs + travelMs + orbitMs) {
-        // Act three: one slow circle around the finish.
-        if (!finishedRef.current) {
-          finishedRef.current = true;
-          setFinished(true);
-        }
-        const t = (elapsed - introMs - travelMs) / orbitMs;
-        lens(WIDE_LENS + (NORMAL_LENS - WIDE_LENS) * ease(t));
-        map.jumpTo({ center: at(total), bearing: heading + 360 * ease(t), pitch: 80 - 14 * ease(t), zoom: 17.6 - 0.9 * ease(t) });
-      } else {
-        cancelAnimationFrame(flight.current);
-        flight.current = 0;
-        walker.current?.remove();
-        walker.current = null;
-        setFlying(false);
-        lens(NORMAL_LENS);
-        const view = overview();
-        if (view) map.easeTo({ ...view, ...CAMERA_3D, duration: calm() ? 0 : 2200 });
-        window.setTimeout(() => setFinished(false), 4000);
-        finishedRef.current = false;
-        return;
-      }
-      flight.current = requestAnimationFrame(frame);
-    };
-    finishedRef.current = false;
-    flight.current = requestAnimationFrame(frame);
+    const flight = new Flight(map, plan.route.legs, view, setFilm, calm());
+    if (!flight.valid) {
+      flight.dispose();
+      return;
+    }
+    flightRef.current = flight;
+    flight.play();
   }, [plan, overview]);
 
-  useEffect(() => () => cancelAnimationFrame(flight.current), []);
+  // After the last frame, hold briefly, then hand the map back.
+  useEffect(() => {
+    if (film?.phase !== 'done') return;
+    const t = window.setTimeout(endFilm, 1200);
+    return () => window.clearTimeout(t);
+  }, [film?.phase, endFilm]);
+
+  useEffect(() => () => flightRef.current?.dispose(), []);
+
+  /** Nudge the camera by hand: rotate around the view, or tilt up and down. */
+  const nudge = (bearing: number, pitch: number) => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.easeTo({ bearing: map.getBearing() + bearing, pitch: Math.max(0, Math.min(85, map.getPitch() + pitch)), duration: 500 });
+  };
+
+  const filmLeg = film && plan ? plan.route.legs[Math.min(film.leg, plan.route.legs.length - 1)] : null;
+  const filmStep = filmLeg && plan ? plan.route.steps[filmLeg.step] : null;
 
   useEffect(() => {
     if (!toast) return;
@@ -619,21 +552,63 @@ export default function App({ mapStyle }: { mapStyle: string }) {
   const route = plan?.route;
 
   return (
-    <div className="shell">
-      <div className="map">
+    <div className={`shell${film ? ' filming' : ''}`}>
+      <div className={`map ${skyPhase}${threeD ? ' scene' : ''}${film ? ' cinema' : ''}`}>
         <div ref={mapEl} className="map-canvas" />
         {sunSpot && (
           <div className={`sun ${skyPhase}${sunSpot.above ? ' above' : ''}`} style={{ left: sunSpot.x, top: sunSpot.y }} aria-hidden="true" />
         )}
-        {finished && (
+        {threeD && <div className="grade" aria-hidden="true" />}
+        {film && <div className="bars" aria-hidden="true" />}
+        {film && <div key={film.cuts} className={film.cuts ? 'cut' : ''} aria-hidden="true" />}
+        {film?.phase === 'finale' && (
           <div className="finale" role="status">
             <span>Walk complete</span>
             {Array.from({ length: 14 }, (_, i) => <i key={i} className="spark" style={{ ['--i' as string]: i }} />)}
           </div>
         )}
-        <button className="btn small view-toggle" aria-pressed={threeD} onClick={() => { stopFlight(); setThreeD((v) => !v); }}>
-          {threeD ? '3D on' : '3D off'}
-        </button>
+        {film && filmStep && film.phase === 'travel' && (
+          <div className="lower-third" key={filmLeg!.step}>
+            <span className="plate">{filmStep.name}</span>
+            {filmStep.sideLabel && <span className="lower-note">{filmStep.sideLabel} side, {filmStep.reason}</span>}
+          </div>
+        )}
+
+        {film ? (
+          <div className="transport" role="group" aria-label="Film controls">
+            <button className="tbtn big" aria-label={film.playing ? 'Pause' : 'Play'} onClick={() => flightRef.current?.toggle()}>{film.playing ? '❚❚' : '▶'}</button>
+            <input
+              className="scrub"
+              type="range"
+              min={0}
+              max={1000}
+              value={Math.round(film.progress * 1000)}
+              aria-label="Position in the walk"
+              onChange={(e) => flightRef.current?.seek(Number(e.target.value) / 1000)}
+            />
+            <button className="tbtn" aria-label="Playback speed" onClick={() => flightRef.current?.setSpeed(film.speed >= 4 ? 1 : film.speed * 2)}>{film.speed}×</button>
+            <button className="tbtn" aria-label="End film" onClick={endFilm}>✕</button>
+            <div className="rigs">
+              {RIGS.map((r) => (
+                <button key={r.id} className="tbtn" title={r.hint} aria-pressed={film.rig === r.id} onClick={() => flightRef.current?.setRig(r.id)}>{r.label}</button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="dock" role="group" aria-label="Map view">
+            <button className="tbtn" aria-pressed={threeD} onClick={() => setThreeD((v) => !v)}>3D</button>
+            {threeD && (
+              <>
+                <button className="tbtn" aria-label="Rotate left" onClick={() => nudge(-35, 0)}>↺</button>
+                <button className="tbtn" aria-label="Rotate right" onClick={() => nudge(35, 0)}>↻</button>
+                <button className="tbtn" aria-label="Tilt toward the horizon" onClick={() => nudge(0, 10)}>▲</button>
+                <button className="tbtn" aria-label="Tilt toward the ground" onClick={() => nudge(0, -10)}>▼</button>
+                <button className="tbtn" aria-pressed={scores} title="Colour every street by its beauty score" onClick={() => setScores((v) => !v)}>Scores</button>
+              </>
+            )}
+            {plan && <button className="tbtn play" onClick={startFilm}>▶ Play the walk</button>}
+          </div>
+        )}
         {source === 'demo' && <div className="banner">Demo grid: these streets and scores are invented. Import real streets to replace them.</div>}
         {loadError && <div className="banner">{loadError}</div>}
         {toast && <div className="banner" role="status">{toast}</div>}
@@ -755,8 +730,8 @@ export default function App({ mapStyle }: { mapStyle: string }) {
                     ) : (
                       <button className="btn primary" onClick={() => setRating(true)}>I walked it: rate the streets</button>
                     )}
-                    <button className="btn" onClick={flying ? stopFlight : flyRoute}>{flying ? 'Stop flight' : 'Fly the walk'}</button>
-                    <button className="btn" onClick={() => { stopFlight(); setPlan(null); setRating(false); }}>Design another</button>
+                    <button className="btn" onClick={startFilm}>▶ Play the walk</button>
+                    <button className="btn" onClick={() => { endFilm(); setPlan(null); setRating(false); }}>Design another</button>
                   </div>
                 </>
               )}
