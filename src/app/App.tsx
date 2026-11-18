@@ -4,7 +4,9 @@ import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource, StyleSpecification } from 'maplibre-gl';
 import type { Feature, FeatureCollection } from 'geojson';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as SunCalc from 'suncalc';
 import { bearing as bearingBetween, haversine } from '@/lib/geo';
+import { applySun, CAMERA_3D, installScene, installTrees, setSceneMode, sunOnScreen, type Sun } from './scene';
 import type { LngLat, Route, RouteLeg, Side, WalkContext } from '@/lib/types';
 
 interface MapBlock {
@@ -62,76 +64,6 @@ const line = (coords: LngLat[], properties: Record<string, unknown>): Feature =>
   geometry: { type: 'LineString', coordinates: coords },
 });
 
-const CAMERA_3D = { pitch: 58, bearing: -18 };
-
-/**
- * Turn the flat map into a blocky 3D city: real terrain, and every building
- * extruded with its height snapped to 3 m steps, like stacked blocks.
- * Each part is optional, so a basemap without buildings or an unreachable
- * terrain service leaves the rest working.
- */
-function add3d(map: maplibregl.Map) {
-  try {
-    map.addSource('bs-dem', {
-      type: 'raster-dem',
-      tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      maxzoom: 15,
-      encoding: 'terrarium',
-      attribution: 'Terrain: Mapzen, USGS',
-    });
-  } catch {
-    /* terrain is optional */
-  }
-  if (map.getSource('openmaptiles')) {
-    const height = ['*', 3, ['ceil', ['/', ['coalesce', ['get', 'render_height'], 9], 3]]];
-    map.addLayer(
-      {
-        id: 'bs-buildings',
-        type: 'fill-extrusion',
-        source: 'openmaptiles',
-        'source-layer': 'building',
-        minzoom: 13,
-        paint: {
-          'fill-extrusion-height': height as never,
-          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
-          // Sandstone low-rises, pale stucco mid-rises, blue-grey towers.
-          'fill-extrusion-color': ['step', height as never, '#eadfca', 10, '#dccba9', 19, '#cdbf9f', 40, '#aab7bd', 90, '#8497a3'],
-          'fill-extrusion-vertical-gradient': true,
-          'fill-extrusion-opacity': 0.9,
-        },
-      },
-      // Above the street lines, below the matchup and route highlights.
-      'duel',
-    );
-  }
-  try {
-    map.setSky({
-      'sky-color': '#9cc3dc',
-      'horizon-color': '#e9eef0',
-      'fog-color': '#e6ecea',
-      'sky-horizon-blend': 0.6,
-      'horizon-fog-blend': 0.6,
-      'fog-ground-blend': 0.35,
-    });
-  } catch {
-    /* sky is decoration */
-  }
-}
-
-function set3d(map: maplibregl.Map, on: boolean) {
-  try {
-    map.setTerrain(on && map.getSource('bs-dem') ? { source: 'bs-dem', exaggeration: 1.4 } : null);
-  } catch {
-    /* terrain is optional */
-  }
-  if (map.getLayer('bs-buildings')) map.setLayoutProperty('bs-buildings', 'visibility', on ? 'visible' : 'none');
-  if (map.getLayer('building')) map.setLayoutProperty('building', 'visibility', on ? 'none' : 'visible');
-  // Only tilt or flatten; leave position and zoom to whoever set them.
-  const target = on ? CAMERA_3D : { pitch: 0, bearing: 0 };
-  if (Math.abs(map.getPitch() - target.pitch) > 1) map.easeTo({ ...target, duration: 900 });
-}
-
 /** Two curbs seen from above, heading up the page; the dot is where you walk. */
 function SideGlyph({ side }: { side: Side }) {
   return (
@@ -164,6 +96,12 @@ export default function App({ mapStyle }: { mapStyle: string }) {
   const [threeD, setThreeD] = useState(true);
   const [flying, setFlying] = useState(false);
   const flight = useRef(0);
+  const walker = useRef<maplibregl.Marker | null>(null);
+  const finishedRef = useRef(false);
+  const introFor = useRef<unknown>(null);
+  const [sunSpot, setSunSpot] = useState<{ x: number; y: number; above: boolean } | null>(null);
+  const [skyPhase, setSkyPhase] = useState<'night' | 'golden' | 'day'>('day');
+  const [finished, setFinished] = useState(false);
 
   const [start, setStart] = useState<LngLat | null>(null);
   const [minutes, setMinutes] = useState(45);
@@ -216,7 +154,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         style,
         center: [-122.418, 37.8],
         zoom: 14,
-        maxPitch: 75,
+        maxPitch: 85,
         pitch: CAMERA_3D.pitch,
         bearing: CAMERA_3D.bearing,
         attributionControl: { compact: true, customAttribution: '© OpenStreetMap contributors' },
@@ -264,7 +202,16 @@ export default function App({ mapStyle }: { mapStyle: string }) {
           layout: { 'line-cap': 'round', 'line-join': 'round' },
           paint: { 'line-color': '#c0362c', 'line-width': 4, 'line-offset': ['get', 'offset'] },
         });
-        add3d(map);
+        installScene(map);
+        fetch('/api/trees')
+          .then((r) => r.json())
+          .then((j: { trees: LngLat[] }) => {
+            if (!cancelled && map) {
+              installTrees(map, j.trees);
+              setSceneMode(map, true);
+            }
+          })
+          .catch(() => undefined);
         // Handy when debugging from the browser console.
         (window as unknown as { __bsMap?: maplibregl.Map }).__bsMap = map;
         setMapReady(true);
@@ -322,9 +269,13 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     if (!mapReady || !start) return;
     if (!startMarker.current) {
       const el = document.createElement('div');
-      el.className = 'start-pin';
-      el.title = 'Walk starts here';
-      startMarker.current = new maplibregl.Marker({ element: el, draggable: true }).setLngLat(start).addTo(mapRef.current!);
+      el.className = 'beacon';
+      el.title = 'Walk starts and ends here';
+      el.innerHTML =
+        '<span class="beacon-beam"></span><span class="beacon-ring"></span><span class="beacon-ring late"></span>' +
+        '<span class="beacon-core"></span>' +
+        Array.from({ length: 6 }, (_, i) => `<i class="spark" style="--i:${i}"></i>`).join('');
+      startMarker.current = new maplibregl.Marker({ element: el, draggable: true, anchor: 'bottom', opacityWhenCovered: '1' }).setLngLat(start).addTo(mapRef.current!);
       startMarker.current.on('dragend', () => {
         const p = startMarker.current!.getLngLat();
         setStart([p.lng, p.lat]);
@@ -345,17 +296,17 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     map.setLayoutProperty('route', 'visibility', visibility);
     map.setLayoutProperty('route-bed', 'visibility', visibility);
     if (legs.length && tab === 'walk') {
-      const bounds = new maplibregl.LngLatBounds();
-      for (const l of legs) for (const c of l.coords) bounds.extend(c);
-      // Work out the zoom that fits the route in the map's box.
-      const box = map.getContainer().getBoundingClientRect();
-      const lngSpan = Math.max(bounds.getEast() - bounds.getWest(), 1e-4);
-      const latSpan = Math.max(bounds.getNorth() - bounds.getSouth(), 1e-4) / Math.cos((bounds.getCenter().lat * Math.PI) / 180);
-      const fit = (px: number, span: number) => Math.log2((Math.max(px - 80, 100) * 360) / (span * 512));
-      // A tilted view foreshortens north-south, so it can sit a little closer.
-      const zoom = Math.min(fit(box.width, lngSpan), fit(box.height, latSpan), 17) + (map.getPitch() > 20 ? 0.25 : 0);
-      map.easeTo({ center: bounds.getCenter(), zoom, duration: 800 });
+      const view = overview();
+      if (view) {
+        if (threeD && !calm() && introFor.current !== plan) {
+          // Reveal a new walk with a swoop: start high and turned away, then settle over it.
+          introFor.current = plan;
+          map.jumpTo({ center: view.center, zoom: view.zoom - 1.6, pitch: 20, bearing: CAMERA_3D.bearing - 70 });
+          map.easeTo({ ...view, ...CAMERA_3D, duration: 2400, easing: (t) => 1 - (1 - t) ** 3 });
+        } else map.easeTo({ ...view, duration: 800 });
+      }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, plan, tab]);
 
   // In 3D, buildings hide stretches of the route line, so mark the walk with a
@@ -375,6 +326,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         while (d <= len) {
           const el = document.createElement('div');
           el.className = 'crumb';
+          el.style.setProperty('--n', String(crumbs.current.length));
           const f = d / len;
           crumbs.current.push(
             new maplibregl.Marker({ element: el, opacityWhenCovered: '1' })
@@ -410,16 +362,62 @@ export default function App({ mapStyle }: { mapStyle: string }) {
 
   // Flat or 3D.
   useEffect(() => {
-    if (mapReady) set3d(mapRef.current!, threeD);
+    if (mapReady) setSceneMode(mapRef.current!, threeD);
   }, [mapReady, threeD]);
+
+  // Where the sun is: at the walk's start time once a walk is designed, otherwise now.
+  const sun: Sun = useMemo(() => {
+    if (plan) return { azimuth: plan.ctx.sunAzimuth, altitude: plan.ctx.sunAltitude, cloud: plan.ctx.weather?.cloudPct ?? 20 };
+    const at = start ?? [-122.4194, 37.8021];
+    const pos = SunCalc.getPosition(new Date(), at[1], at[0]);
+    return { azimuth: pos.azimuth, altitude: pos.altitude, cloud: 20 };
+  }, [plan, start]);
+
+  // Light the scene from the sun and keep the sun disc in the right spot of the sky.
+  useEffect(() => {
+    if (!mapReady) return;
+    const map = mapRef.current!;
+    setSkyPhase(applySun(map, sun));
+    const place = () => setSunSpot(threeD ? sunOnScreen(map, sun) : null);
+    place();
+    map.on('move', place);
+    return () => {
+      map.off('move', place);
+    };
+  }, [mapReady, sun, threeD]);
+
+  const calm = () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const stopFlight = useCallback(() => {
     cancelAnimationFrame(flight.current);
     flight.current = 0;
+    mapRef.current?.stop();
+    walker.current?.remove();
+    walker.current = null;
     setFlying(false);
   }, []);
 
-  /** Fly the camera along the walk at street level, looking where you would be heading. */
+  /** The camera position that shows the whole walk. */
+  const overview = useCallback((): { center: LngLat; zoom: number } | null => {
+    const map = mapRef.current;
+    const legs = plan?.route.legs;
+    if (!map || !legs?.length) return null;
+    const bounds = new maplibregl.LngLatBounds();
+    for (const l of legs) for (const c of l.coords) bounds.extend(c);
+    const box = map.getContainer().getBoundingClientRect();
+    const lngSpan = Math.max(bounds.getEast() - bounds.getWest(), 1e-4);
+    const latSpan = Math.max(bounds.getNorth() - bounds.getSouth(), 1e-4) / Math.cos((bounds.getCenter().lat * Math.PI) / 180);
+    const fit = (px: number, span: number) => Math.log2((Math.max(px - 80, 100) * 360) / (span * 512));
+    // A tilted view foreshortens north-south, so it can sit a little closer.
+    const zoom = Math.min(fit(box.width, lngSpan), fit(box.height, latSpan), 17) + (threeD ? 0.25 : 0);
+    const c = bounds.getCenter();
+    return { center: [c.lng, c.lat], zoom };
+  }, [plan, threeD]);
+
+  /**
+   * Fly the walk in three acts: swoop down to the start, travel the route at
+   * street level looking ahead, then circle the finish before pulling back out.
+   */
   const flyRoute = useCallback(() => {
     const map = mapRef.current;
     const legs = plan?.route.legs;
@@ -437,27 +435,72 @@ export default function App({ mapStyle }: { mapStyle: string }) {
       const f = cum[i] === cum[i - 1] ? 0 : (x - cum[i - 1]) / (cum[i] - cum[i - 1]);
       return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f];
     };
-    // About 55 m of walk per second of flight, between 20 and 75 seconds in all.
-    const duration = Math.max(20000, Math.min(75000, (total / 55) * 1000));
     setThreeD(true);
     setFlying(true);
+    setFinished(false);
+
+    const orb = document.createElement('div');
+    orb.className = 'walker';
+    orb.innerHTML = '<span class="walker-glow"></span><span class="walker-core"></span>' + Array.from({ length: 5 }, (_, i) => `<i class="spark" style="--i:${i}"></i>`).join('');
+    walker.current?.remove();
+    walker.current = new maplibregl.Marker({ element: orb, opacityWhenCovered: '1' }).setLngLat(at(0)).addTo(map);
+
+    // About 45 m of walk per second, between 25 and 90 seconds in all.
+    const travelMs = Math.max(25000, Math.min(90000, (total / 45) * 1000));
+    const introMs = calm() ? 0 : 2600;
+    const orbitMs = calm() ? 0 : 6000;
     let heading = bearingBetween(at(0), at(40));
+    const startHeading = heading;
+    const from = { center: map.getCenter(), zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() };
+    const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+    const turn = (a: number, b: number, t: number) => a + ((((b - a + 540) % 360) - 180) * t);
     const began = performance.now();
+
     const frame = (now: number) => {
-      const t = (now - began) / duration;
-      if (t >= 1) {
-        stopFlight();
+      const elapsed = now - began;
+      if (elapsed < introMs) {
+        // Act one: swoop from wherever the camera is down to street level at the start.
+        const t = ease(elapsed / introMs);
+        const p0 = at(0);
+        map.jumpTo({
+          center: [from.center.lng + (p0[0] - from.center.lng) * t, from.center.lat + (p0[1] - from.center.lat) * t],
+          zoom: from.zoom + (17.6 - from.zoom) * t,
+          pitch: from.pitch + (80 - from.pitch) * t,
+          bearing: turn(from.bearing, startHeading, t),
+        });
+      } else if (elapsed < introMs + travelMs) {
+        // Act two: walk it.
+        const d = ((elapsed - introMs) / travelMs) * total;
+        const here = at(d);
+        const want = bearingBetween(here, at(d + 45));
+        heading += (((want - heading + 540) % 360) - 180) * 0.06;
+        map.jumpTo({ center: here, bearing: heading, pitch: 80, zoom: 17.6 });
+        walker.current?.setLngLat(here);
+      } else if (elapsed < introMs + travelMs + orbitMs) {
+        // Act three: one slow circle around the finish.
+        if (!finishedRef.current) {
+          finishedRef.current = true;
+          setFinished(true);
+        }
+        const t = (elapsed - introMs - travelMs) / orbitMs;
+        map.jumpTo({ center: at(total), bearing: heading + 360 * ease(t), pitch: 80 - 14 * ease(t), zoom: 17.6 - 0.9 * ease(t) });
+      } else {
+        cancelAnimationFrame(flight.current);
+        flight.current = 0;
+        walker.current?.remove();
+        walker.current = null;
+        setFlying(false);
+        const view = overview();
+        if (view) map.easeTo({ ...view, ...CAMERA_3D, duration: calm() ? 0 : 2200 });
+        window.setTimeout(() => setFinished(false), 4000);
+        finishedRef.current = false;
         return;
       }
-      const d = t * total;
-      const want = bearingBetween(at(d), at(d + 45));
-      // Turn the camera gradually so corners sweep instead of snapping.
-      heading += (((want - heading + 540) % 360) - 180) * 0.06;
-      map.jumpTo({ center: at(d), bearing: heading, pitch: 66, zoom: 17.2 });
       flight.current = requestAnimationFrame(frame);
     };
+    finishedRef.current = false;
     flight.current = requestAnimationFrame(frame);
-  }, [plan, stopFlight]);
+  }, [plan, overview]);
 
   useEffect(() => () => cancelAnimationFrame(flight.current), []);
 
@@ -566,6 +609,15 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     <div className="shell">
       <div className="map">
         <div ref={mapEl} className="map-canvas" />
+        {sunSpot && (
+          <div className={`sun ${skyPhase}${sunSpot.above ? ' above' : ''}`} style={{ left: sunSpot.x, top: sunSpot.y }} aria-hidden="true" />
+        )}
+        {finished && (
+          <div className="finale" role="status">
+            <span>Walk complete</span>
+            {Array.from({ length: 14 }, (_, i) => <i key={i} className="spark" style={{ ['--i' as string]: i }} />)}
+          </div>
+        )}
         <button className="btn small view-toggle" aria-pressed={threeD} onClick={() => { stopFlight(); setThreeD((v) => !v); }}>
           {threeD ? '3D on' : '3D off'}
         </button>

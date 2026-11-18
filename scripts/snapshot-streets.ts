@@ -39,6 +39,17 @@ async function main() {
     }
   }
   fs.mkdirSync('data', { recursive: true });
+  // Trees for the 3D scene: city records plus OpenStreetMap's own, one per ~4 m cell.
+  const seen = new Set<string>();
+  const allTrees: LngLat[] = [];
+  const osmTrees: LngLat[] = elements.filter((e) => e.type === 'node' && e.tags?.natural === 'tree').map((e) => [e.lon!, e.lat!]);
+  for (const [lng, lat] of [...cityTrees, ...osmTrees]) {
+    const k = `${Math.round(lng / 0.00004)}:${Math.round(lat / 0.00004)}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    allTrees.push([r(lng, 6), r(lat, 6)]);
+  }
+  fs.writeFileSync('data/trees.json', JSON.stringify(allTrees));
   fs.writeFileSync(
     'data/streets.json',
     JSON.stringify({ generatedAt: new Date().toISOString(), bbox: BBOX, elevation, trees, osmElements: elements.length, droppedBlocks: all.length - blocks.length, blocks }),
