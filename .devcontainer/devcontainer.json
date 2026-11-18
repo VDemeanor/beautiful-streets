@@ -1,0 +1,12 @@
+{
+  // Opens the repo in a GitHub Codespace and starts the app with no typing:
+  // install and build once, then serve on port 3000 every time it starts.
+  "name": "Beautiful Streets",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "postCreateCommand": "npm ci && npm run build",
+  "postStartCommand": "(setsid nohup npm start > /tmp/beautiful-streets.log 2>&1 &) ; sleep 2",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": { "label": "Beautiful Streets", "onAutoForward": "notify" }
+  }
+}
