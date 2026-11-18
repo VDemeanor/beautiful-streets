@@ -48,26 +48,43 @@ out body geom;`;
 
 const OVERPASS_URLS = [
   'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Download the raw map data. Public Overpass servers are shared and often busy,
+ * so this goes round the mirrors up to three times, waiting longer each round.
+ */
 export async function fetchOverpass(b: BBox = BBOX): Promise<OsmElement[]> {
-  let lastError: unknown;
-  for (const url of OVERPASS_URLS) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'data=' + encodeURIComponent(overpassQuery(b)),
-      });
-      if (!res.ok) throw new Error(`Overpass ${url} answered ${res.status}`);
-      const json = (await res.json()) as { elements: OsmElement[] };
-      return json.elements;
-    } catch (err) {
-      lastError = err;
+  const errors: string[] = [];
+  for (let round = 0; round < 3; round++) {
+    if (round > 0) await sleep(round * 20000);
+    for (const url of OVERPASS_URLS) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            // Overpass operators ask clients to identify themselves.
+            'User-Agent': 'beautiful-streets/0.1 (https://github.com/VDemeanor/beautiful-streets)',
+          },
+          body: 'data=' + encodeURIComponent(overpassQuery(b)),
+          signal: AbortSignal.timeout(150000),
+        });
+        if (!res.ok) throw new Error(`answered ${res.status}`);
+        const json = (await res.json()) as { elements: OsmElement[] };
+        if (!json.elements?.length) throw new Error('returned no data');
+        return json.elements;
+      } catch (err) {
+        errors.push(`${new URL(url).host}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
-  throw new Error(`Could not download streets from OpenStreetMap: ${String(lastError)}`);
+  throw new Error(`Could not download streets from OpenStreetMap. ${errors.join('; ')}`);
 }
 
 function isWalkable(tags: Record<string, string>): boolean {
