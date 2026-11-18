@@ -202,6 +202,10 @@ export default function App({ mapStyle }: { mapStyle: string }) {
           paint: { 'line-color': '#c0362c', 'line-width': 4, 'line-offset': ['get', 'offset'] },
         });
         installScene(map);
+        // Start with the map credits folded to their (i) button so they do not cover the picture.
+        const credits = map.getContainer().querySelector('.maplibregl-ctrl-attrib');
+        credits?.classList.remove('maplibregl-compact-show');
+        credits?.removeAttribute('open');
         fetch('/api/trees')
           .then((r) => r.json())
           .then((j: { trees: LngLat[] }) => {
@@ -560,7 +564,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         )}
         {threeD && <div className="grade" aria-hidden="true" />}
         {film && <div className="bars" aria-hidden="true" />}
-        {film && <div key={film.cuts} className={film.cuts ? 'cut' : ''} aria-hidden="true" />}
+        {film && film.cuts > 0 && <div key={`cut-${film.cuts}`} className="cut" aria-hidden="true" />}
         {film?.phase === 'finale' && (
           <div className="finale" role="status">
             <span>Walk complete</span>
@@ -568,7 +572,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
           </div>
         )}
         {film && filmStep && film.phase === 'travel' && (
-          <div className="lower-third" key={filmLeg!.step}>
+          <div className="lower-third" key={`caption-${filmLeg!.step}`}>
             <span className="plate">{filmStep.name}</span>
             {filmStep.sideLabel && <span className="lower-note">{filmStep.sideLabel} side, {filmStep.reason}</span>}
           </div>

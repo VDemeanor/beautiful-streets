@@ -62,6 +62,7 @@ export class Flight {
   private d = 0;
   private cam: Shot | null = null;
   private shotIndex = -1;
+  private pitchLimit: number | null = null;
   private from: Shot;
   private walker: maplibregl.Marker;
   private state: FlightState;
@@ -125,19 +126,50 @@ export class Flight {
     const h = this.heading(d);
     switch (rig) {
       case 'chase':
-        return { look: this.at(d + 18), bearing: h, pitch: 79, zoom: 17.8, lens: 54 };
+        return { look: this.at(d + 18), bearing: h, pitch: 78, zoom: 17.35, lens: 54 };
       case 'side':
-        return { look: this.at(d), bearing: h + (flip ? -82 : 82), pitch: 71, zoom: 17.45 + 0.25 * t, lens: 50 };
+        return { look: this.at(d), bearing: h + (flip ? -82 : 82), pitch: 71, zoom: 17.15 + 0.25 * t, lens: 50 };
       case 'drone':
         return { look: this.at(d + 45), bearing: h - 28 + 56 * t, pitch: 56, zoom: 16.45, lens: 40 };
       case 'orbit':
-        return { look: this.at(d), bearing: h + 40 + 220 * t, pitch: 73, zoom: 17.4, lens: 50 };
+        return { look: this.at(d), bearing: h + 40 + 220 * t, pitch: 72, zoom: 17.1, lens: 50 };
+    }
+  }
+
+  /**
+   * The steepest tilt that keeps the camera above the hill behind it. On San
+   * Francisco's slopes a low camera looking uphill can end up underground.
+   */
+  private safePitch(s: Shot): number {
+    try {
+      const rad = Math.PI / 180;
+      const box = this.map.getContainer().getBoundingClientRect();
+      const metresPerPixel = (78271.5 * Math.cos(s.look[1] * rad)) / 2 ** s.zoom;
+      const distance = (box.height / 2 / Math.tan((s.lens * rad) / 2)) * metresPerPixel;
+      const ground = (p: LngLat) => this.map.queryTerrainElevation(p) ?? 0;
+      const lookGround = ground(s.look);
+      for (let pitch = s.pitch; pitch > 45; pitch -= 3) {
+        const back = distance * Math.sin(pitch * rad);
+        const up = distance * Math.cos(pitch * rad);
+        const b = (s.bearing + 180) * rad;
+        const cam: LngLat = [
+          s.look[0] + (back * Math.sin(b)) / (111320 * Math.cos(s.look[1] * rad)),
+          s.look[1] + (back * Math.cos(b)) / 111320,
+        ];
+        if (lookGround + up > ground(cam) + 14) return pitch;
+      }
+      return 45;
+    } catch {
+      return s.pitch;
     }
   }
 
   private apply(s: Shot) {
+    // Ease toward the safe tilt so the correction itself is not a jolt.
+    const safe = this.safePitch(s);
+    this.pitchLimit = this.pitchLimit === null ? safe : lerp(this.pitchLimit, safe, 0.12);
     this.map.setVerticalFieldOfView?.(s.lens);
-    this.map.jumpTo({ center: s.look, bearing: s.bearing, pitch: s.pitch, zoom: s.zoom });
+    this.map.jumpTo({ center: s.look, bearing: s.bearing, pitch: Math.min(s.pitch, this.pitchLimit), zoom: s.zoom });
   }
 
   private emit(patch: Partial<FlightState>) {

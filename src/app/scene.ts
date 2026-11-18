@@ -91,13 +91,32 @@ export function installScene(map: maplibregl.Map) {
     // Heights snap to 3 m storeys so buildings read as stacked blocks.
     const height = ['*', 3, ['ceil', ['/', ['coalesce', ['get', 'render_height'], 9], 3]]];
     const base = ['coalesce', ['get', 'render_min_height'], 0];
+    // From far away the window pattern turns to grey mush, so distant views
+    // use the plain wall colours and the windows appear as you come closer.
+    map.addLayer(
+      {
+        id: 'bs-buildings-far',
+        type: 'fill-extrusion',
+        source: 'openmaptiles',
+        'source-layer': 'building',
+        minzoom: 13,
+        maxzoom: 15.6,
+        paint: {
+          'fill-extrusion-height': height as never,
+          'fill-extrusion-base': base as never,
+          'fill-extrusion-color': ['match', pick(N), ...WALLS.slice(0, N - 1).flatMap((c, i) => [i, c]), WALLS[N - 1]] as never,
+          'fill-extrusion-vertical-gradient': true,
+        },
+      },
+      'duel',
+    );
     map.addLayer(
       {
         id: 'bs-buildings',
         type: 'fill-extrusion',
         source: 'openmaptiles',
         'source-layer': 'building',
-        minzoom: 13,
+        minzoom: 15.6,
         paint: {
           'fill-extrusion-height': height as never,
           'fill-extrusion-base': base as never,
@@ -176,7 +195,7 @@ export function installTrees(map: maplibregl.Map, trees: LngLat[]) {
   );
 }
 
-const SCENE_LAYERS = ['bs-buildings', 'bs-roofs', 'bs-ground', 'bs-trees', 'bs-trunks'];
+const SCENE_LAYERS = ['bs-buildings', 'bs-buildings-far', 'bs-roofs', 'bs-ground', 'bs-trees', 'bs-trunks'];
 /** The base map's own building layers, which ours replace in 3D. */
 const STYLE_3D = ['building-3d'];
 const STYLE_FLAT = ['building'];
