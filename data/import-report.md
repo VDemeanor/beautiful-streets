@@ -1,6 +1,6 @@
 # Street import report
 
-Generated 2026-11-18T21:58:02.260Z. Elevation: ok. Trees: 18147 city tree records.
+Generated 2026-11-18T23:14:52.081Z. Elevation: ok. Trees: 18147 city tree records.
 
 - Blocks: 3875, 207.1 km
 - By type: residential 1271, footway 750, tertiary 631, service 498, secondary 364, steps 177, primary 89, unclassified 41, path 40, pedestrian 13, living_street 1
@@ -70,34 +70,29 @@ Block score spread: p10 0.16, median 0.46, p90 0.73, max 0.97
 
 ## Forecast lookup
 
-Worked: {"tempC":12.3,"windKph":14.9,"precipMm":0,"precipProb":53,"cloudPct":100}
+Worked: {"tempC":13.333333333333334,"windKph":9.654,"precipMm":0,"precipProb":31,"cloudPct":90}
 
 ## Walks from Hyde and Lombard
 
-Conditions: 54°F, wind 9 mph, 53% chance of rain.
+Conditions: 56°F, wind 6 mph, 31% chance of rain.
 
-### 30 minutes asked: 29 min, 1.06 mi, 239 ft climb, beauty 53, repeat 0%, planned in 178 ms
+### 30 minutes asked: 30 min, 1.01 mi, 306 ft climb, beauty 56, repeat 0%, planned in 245 ms
 
-- Hyde Street, heading south, east side (more trees), 209 m
-- Filbert Street, heading east, north side (either side works), 147 m
-- Leavenworth Street, heading south, east side (either side works), 158 m
-- Macondray Lane, heading east, south side (more trees), 147 m
-- Jones Street, heading south, west side (either side works), 50 m
+- Hyde Street, heading north, east side (more trees), 104 m
+- Chestnut Street, heading east, south side (more trees), 147 m
+- Leavenworth Street, heading south, west side (either side works), 208 m
+- Greenwich Street, heading east, south side (either side works), 147 m
+- Jones Street, heading south, west side (more trees), 314 m
 - Green Street, heading west, north side (either side works), 292 m
-- Hyde Street, heading north, east side (either side works), 210 m
-- Filbert Street, heading west, north side (either side works), 146 m
-- Larkin Street, heading north, east side (either side works), 208 m
-- Lombard Street, heading east, south side (more trees), 147 m
+- Hyde Street, heading north, east side (either side works), 419 m
 
-### 45 minutes asked: 49 min, 1.69 mi, 451 ft climb, beauty 54, repeat 3%, planned in 308 ms
+### 45 minutes asked: 46 min, 1.63 mi, 397 ft climb, beauty 62, repeat 2%, planned in 301 ms
 
 - Hyde Street, heading south, east side (more trees), 209 m
 - Filbert Street, heading east, north side (either side works), 147 m
 - Leavenworth Street, heading south, east side (either side works), 158 m
 - Macondray Lane, heading east, north side (either side works), 293 m
-- Taylor Street, heading south, east side (either side works), 193 m
-- Vallejo Street, heading east, 148 m
-- Taylor Street, heading south, east side (either side works), 159 m
+- Taylor Street, heading south, east side (either side works), 403 m
 - Bernard Street, heading west, south side (either side works), 146 m
 - Jones Street, heading north, west side (more trees), 268 m
 - Green Street, heading west, south side (more trees), 439 m
@@ -105,7 +100,7 @@ Conditions: 54°F, wind 9 mph, 53% chance of rain.
 - Larkin Street, heading north, east side (either side works), 208 m
 - Lombard Street, heading east, south side (more trees), 147 m
 
-### 75 minutes asked: 77 min, 2.73 mi, 689 ft climb, beauty 54, repeat 0%, planned in 381 ms
+### 75 minutes asked: 76 min, 2.68 mi, 687 ft climb, beauty 59, repeat 0%, planned in 378 ms
 
 - Hyde Street, heading north, west side (either side works), 104 m
 - Chestnut Street, heading east, north side (either side works), 586 m
@@ -114,15 +109,19 @@ Conditions: 54°F, wind 9 mph, 53% chance of rain.
 - Lombard Street, heading east, north side (either side works), 110 m
 - Telegraph Hill Boulevard, heading southeast, northeast side (either side works), 59 m
 - Footpath, heading south, 251 m
-- Greenwich Steps, heading northeast, 123 m
+- Greenwich Steps, heading northeast, 100 m
 - Montgomery Street, heading south, east side (more trees), 197 m
-- Union Street, heading west, south side (shopfronts and cafes), 281 m
-- Grant Avenue, heading south, east side (shopfronts and cafes), 132 m
-- Green Street, heading west, south side (more trees), 157 m
-- Green Street, heading west, north side (shopfronts and cafes), 402 m
-- Taylor Street, heading north, east side (either side works), 53 m
+- Union Street, heading west, south side (shopfronts and cafes), 177 m
+- Union Street, heading west, north side (more trees), 216 m
+- Union Street, heading west, south side (more trees), 178 m
+- Powell Street, heading south, east side (either side works), 115 m
+- Green Street, heading west, south side (either side works), 282 m
+- Taylor Street, heading north, west side (more trees), 53 m
 - Macondray Lane, heading west, 146 m
-- Jones Street, heading south, west side (either side works), 263 m
-- Broadway, heading west, north side (more trees), 342 m
+- Jones Street, heading south, east side (either side works), 50 m
+- Green Street, heading west, south side (more trees), 146 m
+- Leavenworth Street, heading south, east side (more trees), 105 m
+- Leavenworth Street, heading south, west side (shopfronts and cafes), 107 m
+- Broadway, heading west, north side (either side works), 147 m
 - Hyde Street, heading north, east side (shopfronts and cafes), 625 m
 
