@@ -1,0 +1,34 @@
+name: Import streets
+# Downloads the street network from OpenStreetMap, scores it, checks the planner
+# against it, and commits the snapshot so the app starts without a download.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/import-streets.yml
+      - scripts/snapshot-streets.ts
+      - src/lib/osm.ts
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx tsx scripts/snapshot-streets.ts
+      - run: npx tsx scripts/smoke.ts
+      - run: cat data/import-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/streets.json data/import-report.md data/sample-routes.json
+          git diff --cached --quiet || git commit -m "Update street snapshot"
+          git pull --rebase
+          git push

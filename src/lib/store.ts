@@ -1,4 +1,5 @@
 import type { Client } from '@libsql/client';
+import fs from 'node:fs';
 import { db } from './db';
 import { demoBlocks } from './demo';
 import { applyElevation, buildBlocks, fetchElevations, fetchOverpass } from './osm';
@@ -13,6 +14,7 @@ export interface World {
 }
 
 const g = globalThis as unknown as { __bsWorld?: Promise<World> };
+const SNAPSHOT = 'data/streets.json';
 
 /** Download, cut and score the street network. Run once; results live in the database. */
 export async function importStreets(mode: 'osm' | 'demo'): Promise<Block[]> {
@@ -27,6 +29,19 @@ export async function importStreets(mode: 'osm' | 'demo'): Promise<Block[]> {
       console.warn('Elevation unavailable; hills and climbs left out.', err);
     }
   }
+  return saveBlocks(blocks, mode);
+}
+
+/** The snapshot committed by the "Import streets" workflow, if present. */
+function readSnapshot(): Block[] | null {
+  try {
+    return (JSON.parse(fs.readFileSync(SNAPSHOT, 'utf8')) as { blocks: Block[] }).blocks;
+  } catch {
+    return null;
+  }
+}
+
+async function saveBlocks(blocks: Block[], mode: 'osm' | 'demo'): Promise<Block[]> {
   const client = await db();
   await client.batch(
     [
@@ -44,7 +59,10 @@ async function load(): Promise<World> {
   const client = await db();
   let rows = (await client.execute('select data from blocks')).rows;
   if (!rows.length) {
-    await importStreets(process.env.BS_SEED === 'demo' ? 'demo' : 'osm');
+    // Order of preference: demo grid if asked for, the committed snapshot, then a live download.
+    const snapshot = process.env.BS_SEED === 'demo' ? null : readSnapshot();
+    if (snapshot) await saveBlocks(snapshot, 'osm');
+    else await importStreets(process.env.BS_SEED === 'demo' ? 'demo' : 'osm');
     rows = (await client.execute('select data from blocks')).rows;
   }
   const blocks = rows.map((r) => JSON.parse(r.data as string) as Block);
