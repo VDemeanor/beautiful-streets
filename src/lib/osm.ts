@@ -39,6 +39,7 @@ export function overpassQuery(b: BBox): string {
   node["amenity"~"^(cafe|restaurant|bar|pub|ice_cream|bakery)$"]${box};
   node["shop"]${box};
   way["leisure"~"^(park|garden)$"]${box};
+  way["natural"="coastline"]${box};
   node["historic"]${box};
   way["historic"]${box};
   way["heritage"]${box};
@@ -139,6 +140,15 @@ function collectFeatures(elements: OsmElement[]): Feature[] {
         // Every outline vertex counts as a bit of green edge.
         for (const g of el.geometry) out.push({ kind: 'park', pt: [g.lon, g.lat] });
       }
+      if (t.natural === 'coastline') {
+        // The waterfront is a view. Mark a point every ~50 m along the shore.
+        for (let i = 1; i < el.geometry.length; i++) {
+          const a: LngLat = [el.geometry[i - 1].lon, el.geometry[i - 1].lat];
+          const b: LngLat = [el.geometry[i].lon, el.geometry[i].lat];
+          const n = Math.max(1, Math.ceil(lineLength([a, b]) / 50));
+          for (let k = 0; k <= n; k++) out.push({ kind: 'view', pt: [a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n] });
+        }
+      }
       if ((t.historic || t.heritage) && !t.highway) {
         const g = el.geometry[0];
         out.push({ kind: 'historic', pt: [g.lon, g.lat] });
@@ -167,7 +177,7 @@ const squash = (density: number, k: number) => 1 - Math.exp(-density / k);
  * intersection, then scored from the trees, shops, parks, landmarks and viewpoints
  * found beside it. Trees and shops are counted per side of the street.
  */
-export function buildBlocks(elements: OsmElement[]): Block[] {
+export function buildBlocks(elements: OsmElement[], extraTrees: LngLat[] = []): Block[] {
   const ways = elements.filter(
     (e) => e.type === 'way' && e.tags && e.nodes && e.geometry && isWalkable(e.tags),
   );
@@ -226,7 +236,19 @@ export function buildBlocks(elements: OsmElement[]): Block[] {
     }
   }
 
-  for (const f of collectFeatures(elements)) {
+  // City tree records and OpenStreetMap trees overlap; keep one tree per ~4 m cell.
+  const features = collectFeatures(elements);
+  const treeCells = new Set<string>();
+  const treeCell = (p: LngLat) => `${Math.round(p[0] / 0.00004)}:${Math.round(p[1] / 0.00004)}`;
+  for (const f of features) if (f.kind === 'tree') treeCells.add(treeCell(f.pt));
+  for (const pt of extraTrees) {
+    const k = treeCell(pt);
+    if (treeCells.has(k)) continue;
+    treeCells.add(k);
+    features.push({ kind: 'tree', pt });
+  }
+
+  for (const f of features) {
     const radius = RADIUS[f.kind];
     const reach = Math.ceil(radius / 40);
     const [cx, cy] = cellOf(f.pt);
@@ -307,7 +329,28 @@ export function applyElevation(blocks: Block[], elevByNode: Map<string, number>)
   }
 }
 
-/** Elevation for each intersection from Open-Meteo, 100 points per request. */
+async function getJson<T>(url: string, tries = 3): Promise<T> {
+  let last = '';
+  for (let i = 0; i < tries; i++) {
+    if (i > 0) await sleep(4000 * i);
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'beautiful-streets/0.1 (https://github.com/VDemeanor/beautiful-streets)' },
+        signal: AbortSignal.timeout(30000),
+      });
+      if (res.ok) return (await res.json()) as T;
+      last = `answered ${res.status}`;
+    } catch (err) {
+      last = err instanceof Error ? err.message : String(err);
+    }
+  }
+  throw new Error(`${new URL(url).host} ${last}`);
+}
+
+/**
+ * Elevation for each intersection, 100 points per request. Tries Open-Meteo,
+ * then Open Topo Data's 10 m US dataset (limited to one request a second).
+ */
 export async function fetchElevations(blocks: Block[]): Promise<Map<string, number>> {
   const pts = new Map<string, LngLat>();
   for (const b of blocks) {
@@ -315,15 +358,59 @@ export async function fetchElevations(blocks: Block[]): Promise<Map<string, numb
     pts.set(b.b, b.coords[b.coords.length - 1]);
   }
   const ids = [...pts.keys()];
-  const out = new Map<string, number>();
-  for (let i = 0; i < ids.length; i += 100) {
-    const chunk = ids.slice(i, i + 100);
-    const lat = chunk.map((id) => pts.get(id)![1].toFixed(5)).join(',');
-    const lng = chunk.map((id) => pts.get(id)![0].toFixed(5)).join(',');
-    const res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lng}`);
-    if (!res.ok) throw new Error(`Elevation service answered ${res.status}`);
-    const json = (await res.json()) as { elevation: number[] };
-    chunk.forEach((id, j) => out.set(id, json.elevation[j]));
+  const sources: { name: string; pause: number; get: (chunk: string[]) => Promise<number[]> }[] = [
+    {
+      name: 'Open-Meteo',
+      pause: 150,
+      get: async (chunk) => {
+        const lat = chunk.map((id) => pts.get(id)![1].toFixed(5)).join(',');
+        const lng = chunk.map((id) => pts.get(id)![0].toFixed(5)).join(',');
+        return (await getJson<{ elevation: number[] }>(`https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lng}`, 2)).elevation;
+      },
+    },
+    {
+      name: 'Open Topo Data',
+      pause: 1100,
+      get: async (chunk) => {
+        const locations = chunk.map((id) => `${pts.get(id)![1].toFixed(5)},${pts.get(id)![0].toFixed(5)}`).join('|');
+        const json = await getJson<{ results: { elevation: number | null }[] }>(`https://api.opentopodata.org/v1/ned10m?locations=${locations}`);
+        return json.results.map((r) => r.elevation ?? 0);
+      },
+    },
+  ];
+  const errors: string[] = [];
+  for (const source of sources) {
+    const out = new Map<string, number>();
+    try {
+      for (let i = 0; i < ids.length; i += 100) {
+        if (i > 0) await sleep(source.pause);
+        const chunk = ids.slice(i, i + 100);
+        const elev = await source.get(chunk);
+        chunk.forEach((id, j) => out.set(id, elev[j]));
+      }
+      return out;
+    } catch (err) {
+      errors.push(`${source.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  throw new Error(errors.join('; '));
+}
+
+/**
+ * San Francisco's own street-tree inventory (DataSF "Street Tree List"), which
+ * covers far more trees than OpenStreetMap does.
+ */
+export async function fetchCityTrees(b: BBox = BBOX): Promise<LngLat[]> {
+  const where = `latitude between ${b.s} and ${b.n} and longitude between ${b.w} and ${b.e}`;
+  const url =
+    `https://data.sfgov.org/resource/tkzw-k3nq.json?$select=latitude,longitude&$limit=50000&$where=` +
+    encodeURIComponent(where);
+  const rows = await getJson<{ latitude?: string; longitude?: string }[]>(url);
+  const out: LngLat[] = [];
+  for (const r of rows) {
+    const lat = Number(r.latitude);
+    const lng = Number(r.longitude);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0) out.push([lng, lat]);
   }
   return out;
 }

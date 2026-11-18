@@ -5,11 +5,13 @@ import { DEFAULT_WEIGHTS } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
+const GENERIC = new Set(['Unnamed street', 'Alley', 'Footpath', 'Stairway']);
+
 export async function GET() {
   const [w, community] = await Promise.all([world(), loadCommunity()]);
   const streets = new Map<string, { len: number; sum: number; votes: number }>();
   for (const b of w.blocks) {
-    if (b.name === 'Unnamed street' || b.name === 'Alley' || b.name === 'Footpath') continue;
+    if (GENERIC.has(b.name)) continue;
     const c = community.get(b.id);
     const s = streets.get(b.name) ?? { len: 0, sum: 0, votes: 0 };
     s.len += b.len;

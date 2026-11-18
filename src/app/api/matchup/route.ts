@@ -6,7 +6,7 @@ import type { Block } from '@/lib/types';
 export const dynamic = 'force-dynamic';
 
 const K = 24;
-const GENERIC = new Set(['Unnamed street', 'Alley', 'Footpath']);
+const GENERIC = new Set(['Unnamed street', 'Alley', 'Footpath', 'Stairway']);
 
 function card(b: Block) {
   const mid = b.coords[Math.floor(b.coords.length / 2)];

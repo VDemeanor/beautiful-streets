@@ -4,15 +4,41 @@ import { DIMS, type Block, type Community, type Side, type WalkContext, type Wei
 /** How many votes it takes for the community to count as much as the map data. */
 const PRIOR_STRENGTH = 4;
 
+/** How pleasant a street is to be on before anything else is known about it. */
+const CALM: Record<string, number> = {
+  steps: 0.45,
+  pedestrian: 0.4,
+  path: 0.4,
+  living_street: 0.4,
+  footway: 0.25,
+  residential: 0.25,
+  unclassified: 0.15,
+  service: 0.1,
+  tertiary: 0.1,
+};
+
+/**
+ * Score from map data alone. A block that is outstanding at one thing (a
+ * stairway with a bay view) should beat one that is mediocre at everything, so
+ * the best quality counts for more than the average of all four. Quiet street
+ * types start with some credit; busy roads lose some.
+ */
 export function priorScore(block: Block, w: Weights): number {
   let total = 0;
   let sum = 0;
+  let top = 0;
+  let maxW = 0;
+  for (const d of DIMS) maxW = Math.max(maxW, w[d]);
   for (const d of DIMS) {
     total += w[d];
     sum += w[d] * block.prior[d];
+    if (maxW > 0) top = Math.max(top, (w[d] / maxW) * block.prior[d]);
   }
-  const base = total > 0 ? sum / total : 0;
-  return clamp01(base - 0.25 * block.prior.traffic);
+  const mean = total > 0 ? sum / total : 0;
+  const quality = 0.55 * top + 0.45 * mean;
+  const traffic = block.prior.traffic;
+  // Traffic both dulls whatever is good about a street and costs points outright.
+  return clamp01(0.75 * quality * (1 - 0.35 * traffic) + 0.6 * (CALM[block.highway] ?? 0) - 0.3 * traffic);
 }
 
 export const eloToScore = (rating: number) => 1 / (1 + 10 ** ((1500 - rating) / 400));

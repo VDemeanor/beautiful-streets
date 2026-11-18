@@ -4,7 +4,11 @@ import { contextPenalty, contextWeights, finalScore, sideNormal, sideScore } fro
 import type { Block, Community, LngLat, Route, RouteLeg, RouteStep, Side, WalkContext, Weights } from './types';
 
 const PACE_M_PER_MIN = 78; // about 4.7 km/h on the flat
-const CROSSING_COST = 0.08;
+const CROSSING_COST = 0.2;
+/** Stairs and paths have no sidewalks to choose between. */
+const UNSIDED = new Set(['steps', 'footway', 'path', 'pedestrian']);
+/** Stretches shorter than this are folded into the step before them. */
+const MIN_STEP_M = 30;
 
 const flip = (s: Side): Side => (s === 'L' ? 'R' : 'L');
 
@@ -22,8 +26,13 @@ export function chooseSides(
   if (!path.length) return [];
   const sides: Side[] = ['L', 'R'];
   // Gain for walking on travel-side s of block i.
+  // A long block is worth crossing for; a 10 m stub is not, so gains scale with length.
   const gains = path.map((t) =>
-    sides.map((s) => sideScore(t.block, t.forward ? s : flip(s), w, ctx, community.get(t.block.id))),
+    sides.map((s) => {
+      if (UNSIDED.has(t.block.highway)) return { score: 0, reason: '' };
+      const g = sideScore(t.block, t.forward ? s : flip(s), w, ctx, community.get(t.block.id));
+      return { score: g.score * Math.min(1.5, t.block.len / 100), reason: g.reason };
+    }),
   );
   const best: number[][] = [gains[0].map((g) => g.score)];
   const from: number[][] = [[0, 1]];
@@ -116,7 +125,7 @@ export function designWalk(input: PlanInput): Route | null {
       coords: t.forward ? t.block.coords : [...t.block.coords].reverse(),
       len: t.block.len,
       side: sides[i].side,
-      sideLabel: cardinal(sideNormal(t.block, blockSide)),
+      sideLabel: UNSIDED.has(t.block.highway) ? '' : cardinal(sideNormal(t.block, blockSide)),
       reason: sides[i].reason,
       score: score(t.block),
       forward: t.forward,
@@ -124,11 +133,14 @@ export function designWalk(input: PlanInput): Route | null {
     };
   });
 
+  // Turn-by-turn steps: consecutive blocks on the same street and side become
+  // one step, and stubs too short to be worth an instruction join the previous one.
   const steps: RouteStep[] = [];
   loop.path.forEach((t, i) => {
     const leg = legs[i];
     const last = steps[steps.length - 1];
-    if (last && last.name === leg.name && last.side === leg.side) {
+    const sameStreet = last && last.name === leg.name && (last.side === leg.side || !leg.sideLabel);
+    if (last && (sameStreet || leg.len < MIN_STEP_M)) {
       last.len += leg.len;
       leg.step = steps.length - 1;
       return;

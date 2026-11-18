@@ -3,12 +3,21 @@
  * can start without calling OpenStreetMap. Run by the "Import streets" workflow.
  */
 import fs from 'node:fs';
-import { applyElevation, BBOX, buildBlocks, fetchElevations, fetchOverpass } from '../src/lib/osm';
+import { applyElevation, BBOX, buildBlocks, fetchCityTrees, fetchElevations, fetchOverpass } from '../src/lib/osm';
+import type { LngLat } from '../src/lib/types';
 import { largestComponent } from '../src/lib/router';
 
 async function main() {
   const elements = await fetchOverpass();
-  const all = buildBlocks(elements);
+  let cityTrees: LngLat[] = [];
+  let trees = '';
+  try {
+    cityTrees = await fetchCityTrees();
+    trees = `${cityTrees.length} city tree records`;
+  } catch (err) {
+    trees = `city tree list failed: ${String(err)}`;
+  }
+  const all = buildBlocks(elements, cityTrees);
   const blocks = largestComponent(all);
   let elevation = 'ok';
   try {
@@ -32,9 +41,9 @@ async function main() {
   fs.mkdirSync('data', { recursive: true });
   fs.writeFileSync(
     'data/streets.json',
-    JSON.stringify({ generatedAt: new Date().toISOString(), bbox: BBOX, elevation, osmElements: elements.length, droppedBlocks: all.length - blocks.length, blocks }),
+    JSON.stringify({ generatedAt: new Date().toISOString(), bbox: BBOX, elevation, trees, osmElements: elements.length, droppedBlocks: all.length - blocks.length, blocks }),
   );
-  console.log(`Saved ${blocks.length} blocks (${all.length - blocks.length} disconnected dropped). Elevation: ${elevation}.`);
+  console.log(`Saved ${blocks.length} blocks (${all.length - blocks.length} disconnected dropped). Elevation: ${elevation}. Trees: ${trees}.`);
 }
 
 main().catch((err) => {

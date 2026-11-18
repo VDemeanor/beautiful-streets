@@ -343,7 +343,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
         const s = stars[leg.step];
         if (s) votes.push({ blockId: leg.blockId, kind: 'rate', side: 'B', value: s });
         const pick = sidePick[leg.step];
-        if (pick) {
+        if (pick && leg.sideLabel) {
           const travelSide = pick === 'same' ? leg.side : flip(leg.side);
           votes.push({ blockId: leg.blockId, kind: 'side', side: leg.forward ? travelSide : flip(travelSide), value: 1 });
         }
@@ -482,10 +482,10 @@ export default function App({ mapStyle }: { mapStyle: string }) {
                   <ol className="steps">
                     {route.steps.map((s, i) => (
                       <li key={i}>
-                        <SideGlyph side={s.side} />
+                        {s.sideLabel ? <SideGlyph side={s.side} /> : <span />}
                         <div className="where">
                           <span><span className="plate">{s.name}</span></span>
-                          <span className="why">Head {s.heading} on the {s.sideLabel} side: {s.reason}</span>
+                          <span className="why">{s.sideLabel ? `Head ${s.heading} on the ${s.sideLabel} side: ${s.reason}` : `Head ${s.heading}`}</span>
                         </div>
                         <span className="dist">{miles(s.len)} mi</span>
                         {rating && (
@@ -495,8 +495,12 @@ export default function App({ mapStyle }: { mapStyle: string }) {
                                 <button key={n} aria-label={`${n} of 5`} aria-pressed={(stars[i] ?? 0) >= n} onClick={() => setStars((x) => ({ ...x, [i]: n }))}>★</button>
                               ))}
                             </span>
-                            <button className="btn small" aria-pressed={sidePick[i] === 'same'} onClick={() => setSidePick((x) => ({ ...x, [i]: 'same' }))}>Right side to walk</button>
-                            <button className="btn small" aria-pressed={sidePick[i] === 'other'} onClick={() => setSidePick((x) => ({ ...x, [i]: 'other' }))}>Other side is nicer</button>
+                            {s.sideLabel && (
+                              <>
+                                <button className="btn small" aria-pressed={sidePick[i] === 'same'} onClick={() => setSidePick((x) => ({ ...x, [i]: 'same' }))}>Right side to walk</button>
+                                <button className="btn small" aria-pressed={sidePick[i] === 'other'} onClick={() => setSidePick((x) => ({ ...x, [i]: 'other' }))}>Other side is nicer</button>
+                              </>
+                            )}
                           </div>
                         )}
                       </li>

@@ -1,40 +1,88 @@
 import * as SunCalc from 'suncalc';
 import type { LngLat, WalkContext, Weather } from './types';
 
-/** Forecast for the hour of the walk from Open-Meteo. Returns null if unavailable. */
+const UA = { 'User-Agent': 'beautiful-streets/0.1 (https://github.com/VDemeanor/beautiful-streets)' };
+
+async function openMeteo(at: LngLat, when: Date): Promise<Weather | null> {
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${at[1].toFixed(4)}&longitude=${at[0].toFixed(4)}` +
+    `&hourly=temperature_2m,precipitation_probability,precipitation,wind_speed_10m,cloud_cover` +
+    `&timeformat=unixtime&forecast_days=7&past_days=1`;
+  const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(6000) });
+  if (!res.ok) return null;
+  const j = (await res.json()) as {
+    hourly: {
+      time: number[];
+      temperature_2m: number[];
+      precipitation_probability: (number | null)[];
+      precipitation: number[];
+      wind_speed_10m: number[];
+      cloud_cover: number[];
+    };
+  };
+  const t = when.getTime() / 1000;
+  let best = 0;
+  for (let i = 1; i < j.hourly.time.length; i++)
+    if (Math.abs(j.hourly.time[i] - t) < Math.abs(j.hourly.time[best] - t)) best = i;
+  if (Math.abs(j.hourly.time[best] - t) > 2 * 3600) return null;
+  return {
+    tempC: j.hourly.temperature_2m[best],
+    windKph: j.hourly.wind_speed_10m[best],
+    precipMm: j.hourly.precipitation[best],
+    precipProb: j.hourly.precipitation_probability[best] ?? 0,
+    cloudPct: j.hourly.cloud_cover[best],
+  };
+}
+
+/** US National Weather Service hourly forecast: the fallback, and US-only. */
+async function nws(at: LngLat, when: Date): Promise<Weather | null> {
+  const headers = { ...UA, Accept: 'application/geo+json' };
+  const point = await fetch(`https://api.weather.gov/points/${at[1].toFixed(4)},${at[0].toFixed(4)}`, { headers, signal: AbortSignal.timeout(6000) });
+  if (!point.ok) return null;
+  const hourlyUrl = ((await point.json()) as { properties?: { forecastHourly?: string } }).properties?.forecastHourly;
+  if (!hourlyUrl) return null;
+  const res = await fetch(hourlyUrl, { headers, signal: AbortSignal.timeout(8000) });
+  if (!res.ok) return null;
+  const periods = ((await res.json()) as {
+    properties: {
+      periods: {
+        startTime: string;
+        endTime: string;
+        temperature: number;
+        temperatureUnit: string;
+        windSpeed: string;
+        shortForecast: string;
+        probabilityOfPrecipitation?: { value: number | null };
+      }[];
+    };
+  }).properties.periods;
+  const t = when.getTime();
+  const p = periods.find((x) => new Date(x.startTime).getTime() <= t && t < new Date(x.endTime).getTime()) ?? (t < new Date(periods[0].startTime).getTime() ? periods[0] : undefined);
+  if (!p) return null;
+  const mph = Number(/\d+/.exec(p.windSpeed)?.[0] ?? 0);
+  const sky = p.shortForecast.toLowerCase();
+  const prob = p.probabilityOfPrecipitation?.value ?? 0;
+  return {
+    tempC: p.temperatureUnit === 'F' ? ((p.temperature - 32) * 5) / 9 : p.temperature,
+    windKph: mph * 1.609,
+    // The hourly feed gives a chance of rain, not an amount.
+    precipMm: /rain|showers|drizzle|thunder/.test(sky) && prob >= 50 ? 0.5 : 0,
+    precipProb: prob,
+    cloudPct: /sunny|clear/.test(sky) ? (/(partly|mostly)/.test(sky) ? 35 : 5) : /partly/.test(sky) ? 50 : /fog|cloud|overcast|rain|showers/.test(sky) ? 90 : 60,
+  };
+}
+
+/** Forecast for the hour of the walk. Returns null if no source can supply one. */
 export async function fetchWeather(at: LngLat, when: Date): Promise<Weather | null> {
-  try {
-    const url =
-      `https://api.open-meteo.com/v1/forecast?latitude=${at[1].toFixed(4)}&longitude=${at[0].toFixed(4)}` +
-      `&hourly=temperature_2m,precipitation_probability,precipitation,wind_speed_10m,cloud_cover` +
-      `&timeformat=unixtime&forecast_days=7&past_days=1`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (!res.ok) return null;
-    const j = (await res.json()) as {
-      hourly: {
-        time: number[];
-        temperature_2m: number[];
-        precipitation_probability: (number | null)[];
-        precipitation: number[];
-        wind_speed_10m: number[];
-        cloud_cover: number[];
-      };
-    };
-    const t = when.getTime() / 1000;
-    let best = 0;
-    for (let i = 1; i < j.hourly.time.length; i++)
-      if (Math.abs(j.hourly.time[i] - t) < Math.abs(j.hourly.time[best] - t)) best = i;
-    if (Math.abs(j.hourly.time[best] - t) > 2 * 3600) return null;
-    return {
-      tempC: j.hourly.temperature_2m[best],
-      windKph: j.hourly.wind_speed_10m[best],
-      precipMm: j.hourly.precipitation[best],
-      precipProb: j.hourly.precipitation_probability[best] ?? 0,
-      cloudPct: j.hourly.cloud_cover[best],
-    };
-  } catch {
-    return null;
+  for (const source of [openMeteo, nws]) {
+    try {
+      const w = await source(at, when);
+      if (w) return w;
+    } catch {
+      /* try the next source */
+    }
   }
+  return null;
 }
 
 /** Hour of day and weekday in San Francisco, whatever the server's own time zone. */

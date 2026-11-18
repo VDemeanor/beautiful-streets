@@ -9,6 +9,7 @@ on:
       - .github/workflows/import-streets.yml
       - scripts/snapshot-streets.ts
       - src/lib/osm.ts
+      - scripts/smoke.ts
 permissions:
   contents: write
 jobs:

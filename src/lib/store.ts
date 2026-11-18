@@ -2,7 +2,7 @@ import type { Client } from '@libsql/client';
 import fs from 'node:fs';
 import { db } from './db';
 import { demoBlocks } from './demo';
-import { applyElevation, buildBlocks, fetchElevations, fetchOverpass } from './osm';
+import { applyElevation, buildBlocks, fetchCityTrees, fetchElevations, fetchOverpass } from './osm';
 import { buildGraph, largestComponent, type Graph } from './router';
 import type { Block, Community } from './types';
 
@@ -22,7 +22,8 @@ export async function importStreets(mode: 'osm' | 'demo'): Promise<Block[]> {
   if (mode === 'demo') {
     blocks = demoBlocks();
   } else {
-    blocks = largestComponent(buildBlocks(await fetchOverpass()));
+    const trees = await fetchCityTrees().catch(() => []);
+    blocks = largestComponent(buildBlocks(await fetchOverpass(), trees));
     try {
       applyElevation(blocks, await fetchElevations(blocks));
     } catch (err) {
