@@ -19,7 +19,7 @@ const BRICK: [number, number, number][] = [[166, 104, 80], [142, 92, 76]];
 const GLASS: [number, number, number][] = [[104, 128, 146], [112, 136, 134]];
 const GLASS_FAR = ['#7890a0', '#809896'];
 /** Flat roofs: tar and gravel greys, a pale membrane, one terracotta. */
-const ROOFS = ['#8f8c86', '#a9a59d', '#c9c6be', '#77756f', '#a8826c'];
+const ROOFS = ['#bdbab2', '#cbc7be', '#dfdcd4', '#a9a69f', '#c59c84'];
 const N = WALLS.length;
 
 /** Which palette entry a building gets: stable per building, varied between neighbours. */
@@ -274,10 +274,10 @@ function realGround(map: maplibregl.Map): [string, string, unknown][] {
       // Casings become the concrete kerb and sidewalk edge; the road itself is asphalt.
       if (id.includes('casing')) out.push([id, 'line-color', '#aeaaa0']);
       else if (id.includes('path_pedestrian')) out.push([id, 'line-color', '#bdb8ab']);
-      else if (id.includes('motorway') || id.includes('trunk_primary')) out.push([id, 'line-color', '#46494d']);
-      else if (id.includes('secondary_tertiary') || id.includes('link')) out.push([id, 'line-color', '#4d5054']);
-      else if (id.includes('service_track')) out.push([id, 'line-color', '#64676a']);
-      else out.push([id, 'line-color', '#56595d']);
+      else if (id.includes('motorway') || id.includes('trunk_primary')) out.push([id, 'line-color', '#4a4a48']);
+      else if (id.includes('secondary_tertiary') || id.includes('link')) out.push([id, 'line-color', '#50504e']);
+      else if (id.includes('service_track')) out.push([id, 'line-color', '#666563']);
+      else out.push([id, 'line-color', '#5a5957']);
     } else if (layer.type === 'line' && sl === 'park') out.push([id, 'line-color', '#6f9a5a']);
   }
   return out;

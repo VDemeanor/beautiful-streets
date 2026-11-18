@@ -89,34 +89,31 @@ export function startBirds(map: maplibregl.Map, canvas: HTMLCanvasElement): () =
         const x = ground.x;
         const y = ground.y - height * pxPerMetre * Math.sin(pitch);
         if (x < -40 || x > box.width + 40 || y < -40 || y > box.height + 40) continue;
-        // Drawn several times life size, or they would be specks.
-        const span = Math.max(4.5, Math.min(26, pxPerMetre * 9));
-        const heading = Math.atan2(ahead.y - ground.y, ahead.x - ground.x);
+        // Drawn a few times life size, or they would be specks.
+        const span = Math.max(3, Math.min(10, pxPerMetre * 3.4));
+        // Seen from a distance a gull is a shallow "M"; it banks a little into its turn.
+        const bank = Math.max(-0.45, Math.min(0.45, ((ahead.x - ground.x) / 12) * 0.12)) * b.clockwise;
         // Flap in bursts, then glide.
         const cycle = (t * 0.33 + b.flap) % 1;
-        const beat = cycle < 0.62 ? Math.sin((t * 7.5 + b.flap) * 2) : 0.25;
-        const lift = span * 0.34 * beat;
+        const beat = cycle < 0.62 ? Math.sin((t * 7.5 + b.flap) * 2) : 0.3;
+        const lift = span * 0.42 * beat;
 
         g.save();
         g.translate(x, y);
-        g.rotate(heading + Math.PI / 2);
+        g.rotate(bank);
         g.lineCap = 'round';
         g.lineJoin = 'round';
         const wing = (colour: string, width: number) => {
           g.strokeStyle = colour;
           g.lineWidth = width;
           g.beginPath();
-          g.moveTo(-span, -lift * 0.2);
-          g.quadraticCurveTo(-span * 0.5, -lift - span * 0.16, 0, 0);
-          g.quadraticCurveTo(span * 0.5, -lift - span * 0.16, span, -lift * 0.2);
+          g.moveTo(-span, -lift);
+          g.quadraticCurveTo(-span * 0.45, -lift * 0.2 - span * 0.22, 0, 0);
+          g.quadraticCurveTo(span * 0.45, -lift * 0.2 - span * 0.22, span, -lift);
           g.stroke();
         };
-        wing('rgba(38,44,54,0.55)', Math.max(1.6, span * 0.2)); // dark edge so they read against bright sky
-        wing('rgba(250,250,248,0.96)', Math.max(1, span * 0.12)); // white wings
-        g.fillStyle = 'rgba(250,250,248,0.96)';
-        g.beginPath();
-        g.ellipse(0, span * 0.06, span * 0.09, span * 0.24, 0, 0, Math.PI * 2);
-        g.fill();
+        wing('rgba(34,40,50,0.5)', Math.max(1.5, span * 0.26)); // dark edge so they read against bright sky
+        wing('rgba(250,250,248,0.95)', Math.max(0.8, span * 0.13)); // white wings
         g.restore();
       }
     }
