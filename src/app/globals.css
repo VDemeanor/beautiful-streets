@@ -124,3 +124,4 @@ input[type='text'], input[type='datetime-local'] {
 
 .view-toggle { position: absolute; left: 10px; top: 10px; z-index: 4; }
 .banner { top: 54px; }
+.crumb { width: 7px; height: 7px; background: var(--orange); border: 1.5px solid #fff; pointer-events: none; }

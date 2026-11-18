@@ -98,7 +98,7 @@ function add3d(map: maplibregl.Map) {
           // Sandstone low-rises, pale stucco mid-rises, blue-grey towers.
           'fill-extrusion-color': ['step', height as never, '#eadfca', 10, '#dccba9', 19, '#cdbf9f', 40, '#aab7bd', 90, '#8497a3'],
           'fill-extrusion-vertical-gradient': true,
-          'fill-extrusion-opacity': 0.96,
+          'fill-extrusion-opacity': 0.9,
         },
       },
       // Above the street lines, below the matchup and route highlights.
@@ -150,6 +150,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const startMarker = useRef<maplibregl.Marker | null>(null);
   const panelEl = useRef<HTMLDivElement>(null);
+  const crumbs = useRef<maplibregl.Marker[]>([]);
   const [mapReady, setMapReady] = useState(false);
 
   const [blocks, setBlocks] = useState<MapBlock[]>([]);
@@ -346,16 +347,46 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     if (legs.length && tab === 'walk') {
       const bounds = new maplibregl.LngLatBounds();
       for (const l of legs) for (const c of l.coords) bounds.extend(c);
-      // Work out the zoom that fits the route in the map's box, then back off a
-      // little when tilted, because a tilted camera over hills needs extra room.
+      // Work out the zoom that fits the route in the map's box.
       const box = map.getContainer().getBoundingClientRect();
       const lngSpan = Math.max(bounds.getEast() - bounds.getWest(), 1e-4);
       const latSpan = Math.max(bounds.getNorth() - bounds.getSouth(), 1e-4) / Math.cos((bounds.getCenter().lat * Math.PI) / 180);
       const fit = (px: number, span: number) => Math.log2((Math.max(px - 80, 100) * 360) / (span * 512));
-      const zoom = Math.min(fit(box.width, lngSpan), fit(box.height, latSpan), 17) - (map.getPitch() > 20 ? 0.7 : 0);
+      // A tilted view foreshortens north-south, so it can sit a little closer.
+      const zoom = Math.min(fit(box.width, lngSpan), fit(box.height, latSpan), 17) + (map.getPitch() > 20 ? 0.25 : 0);
       map.easeTo({ center: bounds.getCenter(), zoom, duration: 800 });
     }
   }, [mapReady, plan, tab]);
+
+  // In 3D, buildings hide stretches of the route line, so mark the walk with a
+  // trail of small blocks that always draw on top.
+  useEffect(() => {
+    for (const c of crumbs.current) c.remove();
+    crumbs.current = [];
+    const legs = plan?.route.legs;
+    if (!mapReady || !legs?.length || !threeD || tab !== 'walk') return;
+    let carry = 0;
+    for (const leg of legs) {
+      for (let i = 1; i < leg.coords.length; i++) {
+        const a = leg.coords[i - 1];
+        const b = leg.coords[i];
+        const len = haversine(a, b);
+        let d = 35 - carry;
+        while (d <= len) {
+          const el = document.createElement('div');
+          el.className = 'crumb';
+          const f = d / len;
+          crumbs.current.push(
+            new maplibregl.Marker({ element: el, opacityWhenCovered: '1' })
+              .setLngLat([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f])
+              .addTo(mapRef.current!),
+          );
+          d += 35;
+        }
+        carry = (carry + len) % 35;
+      }
+    }
+  }, [mapReady, plan, threeD, tab]);
 
   // Show a new plan, or a new tab, from the top.
   useEffect(() => {
