@@ -122,4 +122,5 @@ input[type='text'], input[type='datetime-local'] {
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 
-.view-toggle { position: absolute; left: 10px; bottom: 34px; z-index: 4; }
+.view-toggle { position: absolute; left: 10px; top: 10px; z-index: 4; }
+.banner { top: 54px; }

@@ -284,7 +284,8 @@ export default function App({ mapStyle }: { mapStyle: string }) {
       const home: LngLat = [-122.4194, 37.8021];
       const covered = home[0] > w && home[0] < e && home[1] > s && home[1] < n;
       setStart((cur) => cur ?? (covered ? home : [(w + e) / 2, (s + n) / 2]));
-      mapRef.current?.fitBounds([[w, s], [e, n]], { padding: 24, duration: 0 });
+      // Open on the neighbourhood around the start, close enough for buildings to show.
+      mapRef.current?.jumpTo({ center: covered ? home : [(w + e) / 2, (s + n) / 2], zoom: 15.4 });
     });
   }, [loadWorld]);
 
@@ -341,7 +342,10 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     if (legs.length && tab === 'walk') {
       const bounds = new maplibregl.LngLatBounds();
       for (const l of legs) for (const c of l.coords) bounds.extend(c);
-      map.fitBounds(bounds, { padding: 40 });
+      // A tilted camera over terrain needs extra room, so fit flat and back off a little.
+      const cam = map.cameraForBounds(bounds, { padding: 40 });
+      const tilted = map.getPitch() > 20;
+      map.easeTo({ center: bounds.getCenter(), zoom: (cam?.zoom ?? 15) - (tilted ? 0.9 : 0), duration: 800 });
     }
   }, [mapReady, plan, tab]);
 
