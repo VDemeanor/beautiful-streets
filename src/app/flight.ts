@@ -25,6 +25,9 @@ export interface FlightState {
   phase: 'intro' | 'travel' | 'finale' | 'done';
   /** 0..1 along the walk. */
   progress: number;
+  /** Metres walked, and the length of the whole walk. */
+  metres: number;
+  total: number;
   /** Index of the route leg under the walker. */
   leg: number;
   /** Increases by one on every hard cut, so the screen can blink like a film cut. */
@@ -58,6 +61,10 @@ export interface Stage {
   height(): number;
   /** Cancel any camera motion in progress and restore the normal lens. */
   settle(): void;
+  /** Show this much of the planned path (drawn on during the opening shot). */
+  reveal?(path: LngLat[]): void;
+  /** The part already walked, drawn brighter over the plan. */
+  trail?(path: LngLat[]): void;
 }
 
 /** Distance from the camera to what it looks at, in metres. */
@@ -125,6 +132,8 @@ export class Flight {
   private cam: Shot | null = null;
   private shotIndex = -1;
   private pitchLimit: number | null = null;
+  private lastTrail = 0;
+  private travelMs = 0;
   private from: Shot;
   private state: FlightState;
   private introMs: number;
@@ -152,7 +161,7 @@ export class Flight {
     this.from = stage.current();
     stage.walker(this.at(0));
 
-    this.state = { playing: false, phase: this.introMs ? 'intro' : 'travel', progress: 0, leg: 0, cuts: 0, rig: 'director', speed: 1 };
+    this.state = { playing: false, phase: this.introMs ? 'intro' : 'travel', progress: 0, metres: 0, total: this.total, leg: 0, cuts: 0, rig: 'director', speed: 1 };
   }
 
   get valid() {
@@ -166,6 +175,24 @@ export class Flight {
     const span = this.cum[i] - this.cum[i - 1];
     const f = span === 0 ? 0 : (x - this.cum[i - 1]) / span;
     return [lerp(this.pts[i - 1][0], this.pts[i][0], f), lerp(this.pts[i - 1][1], this.pts[i][1], f)];
+  }
+
+  /** The path from the start up to distance d. */
+  private upTo(d: number): LngLat[] {
+    const x = clamp(d, 0, this.total);
+    const out: LngLat[] = [];
+    for (let i = 0; i < this.pts.length && this.cum[i] <= x; i++) out.push(this.pts[i]);
+    out.push(this.at(x));
+    return out;
+  }
+
+  /** How sharply the route bends just ahead, in degrees. */
+  private bend(d: number): number {
+    const a = this.at(clamp(d - 6, 0, this.total));
+    const b = this.at(clamp(d + 6, 0, this.total));
+    const c = this.at(clamp(d + 22, 0, this.total));
+    if ((a[0] === b[0] && a[1] === b[1]) || (b[0] === c[0] && b[1] === c[1])) return 0;
+    return Math.abs((((bearingBetween(b, c) - bearingBetween(a, b) + 540) % 360) - 180));
   }
 
   /** Direction of travel, looking a little ahead so corners are anticipated. */
@@ -246,8 +273,12 @@ export class Flight {
       const first = this.shot('chase', 0, 0, false);
       const high: Shot = { look: this.overview.center, bearing: CAMERA_3D.bearing + 55, pitch: 66, zoom: this.overview.zoom + 0.35, lens: NORMAL_LENS };
       if (this.phaseMs < arcMs) {
-        // Establishing shot: drift in an arc over the whole walk.
+        // Establishing shot: drift in an arc over the whole walk while the route draws itself on.
         const t = this.phaseMs / arcMs;
+        if (now - this.lastTrail > 60) {
+          this.lastTrail = now;
+          this.stage.reveal?.(this.upTo(this.total * ease(Math.min(1, t * 1.25))));
+        }
         const startArc: Shot = { ...high, bearing: CAMERA_3D.bearing - 35, pitch: 52, zoom: this.overview.zoom - 0.25 };
         const k = ease(Math.min(1, t * 4)); // blend out of wherever the camera was
         const arc: Shot = { look: high.look, bearing: lerp(startArc.bearing, high.bearing, t), pitch: lerp(startArc.pitch, high.pitch, t), zoom: lerp(startArc.zoom, high.zoom, t), lens: NORMAL_LENS };
@@ -271,11 +302,22 @@ export class Flight {
       } else {
         this.cam = first;
         this.shotIndex = 0;
+        this.stage.reveal?.(this.pts);
         this.emit({ phase: 'travel' });
       }
     } else if (s.phase === 'travel') {
-      // About 42 m of walk per second at normal speed.
-      this.d = Math.min(this.total, this.d + (dt / 1000) * 42 * s.speed);
+      // About 42 m of walk per second at normal speed: easing away from the
+      // start, slowing through corners so each turn can be read, and easing
+      // into the finish.
+      this.travelMs += dt;
+      const away = Math.min(1, 0.25 + this.travelMs / 2600);
+      const corner = 1 - 0.45 * Math.min(1, this.bend(this.d) / 70);
+      const arrive = Math.min(1, 0.3 + (this.total - this.d) / 60);
+      this.d = Math.min(this.total, this.d + (dt / 1000) * 42 * s.speed * away * corner * arrive);
+      if (now - this.lastTrail > 110) {
+        this.lastTrail = now;
+        this.stage.trail?.(this.upTo(this.d));
+      }
       const index = Math.floor(this.d / SHOT_METRES);
       const t = (this.d % SHOT_METRES) / SHOT_METRES;
       const rig = s.rig === 'director' ? SEQUENCE[index % SEQUENCE.length] : s.rig;
@@ -302,9 +344,10 @@ export class Flight {
       const progress = this.d / this.total;
       if (this.d >= this.total) {
         this.phaseMs = 0;
-        this.emit({ progress: 1, leg: this.legEnds.length - 1, cuts, phase: this.finaleMs ? 'finale' : 'done', playing: !!this.finaleMs });
+        this.stage.trail?.(this.pts);
+        this.emit({ progress: 1, metres: this.total, leg: this.legEnds.length - 1, cuts, phase: this.finaleMs ? 'finale' : 'done', playing: !!this.finaleMs });
         if (!this.finaleMs) return this.finish();
-      } else this.emit({ progress, leg: this.legAt(this.d), cuts });
+      } else this.emit({ progress, metres: this.d, leg: this.legAt(this.d), cuts });
     } else if (s.phase === 'finale') {
       this.phaseMs += dt;
       const end = this.at(this.total);
@@ -362,7 +405,10 @@ export class Flight {
     this.cam = null;
     this.shotIndex = Math.floor(this.d / SHOT_METRES);
     this.phaseMs = 0;
-    this.emit({ phase: 'travel', progress: this.d / this.total, leg: this.legAt(this.d) });
+    this.travelMs = 3000;
+    this.stage.reveal?.(this.pts);
+    this.stage.trail?.(this.upTo(this.d));
+    this.emit({ phase: 'travel', progress: this.d / this.total, metres: this.d, leg: this.legAt(this.d) });
     if (!this.state.playing) {
       const index = this.shotIndex;
       const rig = this.state.rig === 'director' ? SEQUENCE[index % SEQUENCE.length] : this.state.rig;
@@ -388,5 +434,7 @@ export class Flight {
     this.raf = 0;
     this.stage.settle();
     this.stage.walker(null);
+    this.stage.reveal?.(this.pts);
+    this.stage.trail?.([]);
   }
 }

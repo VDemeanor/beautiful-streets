@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { LngLat, RouteLeg } from '@/lib/types';
 import { cameraDistance, NORMAL_LENS, type Shot, type Stage } from './flight';
 
@@ -17,6 +17,8 @@ export interface PhotorealApi {
   frame(view: { center: LngLat; zoom: number }, pitch: number, bearing: number): void;
   /** Rotate or tilt by hand. */
   nudge(bearing: number, pitch: number): void;
+  /** Mark the next turn with the name of the street to take, or clear it with null. */
+  nextTurn(at: LngLat | null, label?: string): void;
 }
 
 /* The Maps library is loaded at run time and has no bundled types here. */
@@ -46,6 +48,64 @@ function loadMaps3d(key: string): Promise<Maps3d> {
   return loading;
 }
 
+const toCoords = (path: LngLat[]) => path.map(([lng, lat]) => ({ lat, lng }));
+
+/** A marker drawn from our own SVG rather than Google's red pin. */
+function svgMarker(lib: Maps3d, options: Record<string, unknown>, svg: string): any {
+  const marker = new lib.Marker3DElement(options);
+  try {
+    const template = document.createElement('template');
+    template.innerHTML = svg;
+    marker.append(template);
+  } catch {
+    /* fall back to the default pin */
+  }
+  return marker;
+}
+
+const ORB_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">' +
+  '<defs><radialGradient id="g" cx="38%" cy="32%"><stop offset="0" stop-color="#fff"/><stop offset=".4" stop-color="#ffd27a"/><stop offset="1" stop-color="#e2542f"/></radialGradient>' +
+  '<radialGradient id="h"><stop offset="0" stop-color="#ffc86e" stop-opacity=".85"/><stop offset="1" stop-color="#ffc86e" stop-opacity="0"/></radialGradient></defs>' +
+  '<circle cx="22" cy="22" r="21" fill="url(#h)"/><circle cx="22" cy="22" r="9" fill="url(#g)" stroke="#fff" stroke-width="2.5"/></svg>';
+
+const GEM_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="46" height="46" viewBox="0 0 46 46">' +
+  '<defs><linearGradient id="d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffe9a8"/><stop offset=".4" stop-color="#ffb23e"/><stop offset=".75" stop-color="#e2542f"/><stop offset="1" stop-color="#8f1f1a"/></linearGradient></defs>' +
+  '<rect x="11" y="11" width="24" height="24" rx="3" transform="rotate(45 23 23)" fill="url(#d)" stroke="#fff" stroke-width="3"/></svg>';
+
+/** Small arrowheads laid on the ground along the path, pointing the way to walk. */
+function chevrons(path: LngLat[], everyMetres: number): LngLat[][] {
+  const out: LngLat[][] = [];
+  const rad = Math.PI / 180;
+  let carry = everyMetres * 0.6;
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1];
+    const b = path[i];
+    const kx = 111320 * Math.cos(a[1] * rad);
+    const dx = (b[0] - a[0]) * kx;
+    const dy = (b[1] - a[1]) * 111320;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) continue;
+    const ux = dx / len;
+    const uy = dy / len;
+    let d = everyMetres - carry;
+    while (d <= len) {
+      const tipX = a[0] * kx + ux * d;
+      const tipY = a[1] * 111320 + uy * d;
+      const arm = 5.5;
+      const wing = (side: number): LngLat => [
+        (tipX - ux * arm + -uy * side * arm * 0.75) / kx,
+        (tipY - uy * arm + ux * side * arm * 0.75) / 111320,
+      ];
+      out.push([wing(1), [tipX / kx, tipY / 111320], wing(-1)]);
+      d += everyMetres;
+    }
+    carry = (carry + len) % everyMetres;
+  }
+  return out;
+}
+
 interface Props {
   apiKey: string;
   start: LngLat;
@@ -61,6 +121,10 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
   const mapRef = useRef<any>(null);
   const libRef = useRef<Maps3d>(null);
   const routeRef = useRef<any[]>([]);
+  const baseRef = useRef<any>(null);
+  const walkedRef = useRef<any>(null);
+  const turnRef = useRef<any>(null);
+  const [ready, setReady] = useState(false);
   const altitudeRef = useRef(altitude);
   altitudeRef.current = altitude;
 
@@ -115,11 +179,17 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
             }
             const position = { lat: at[1], lng: at[0], altitude: 4 };
             if (!walker) {
-              walker = new lib.Marker3DElement({ position, altitudeMode: 'RELATIVE_TO_GROUND', extruded: true });
+              walker = svgMarker(lib, { position, altitudeMode: 'RELATIVE_TO_GROUND' }, ORB_SVG);
               map.append(walker);
             } else walker.position = position;
           },
           height,
+          reveal(path) {
+            if (baseRef.current) baseRef.current.coordinates = toCoords(path.length > 1 ? path : []);
+          },
+          trail(path) {
+            if (walkedRef.current) walkedRef.current.coordinates = toCoords(path.length > 1 ? path : []);
+          },
           settle() {
             try {
               map.stopCameraAnimation?.();
@@ -129,6 +199,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
             }
           },
         };
+        setReady(true);
         onReady({
           stage,
           frame(view, pitch, bearing) {
@@ -147,6 +218,25 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
               put(end);
             }
           },
+          nextTurn(at, label) {
+            try {
+              if (!at) {
+                turnRef.current?.remove();
+                turnRef.current = null;
+                return;
+              }
+              const position = { lat: at[1], lng: at[0], altitude: 16 };
+              if (!turnRef.current) {
+                turnRef.current = new lib.Marker3DElement({ position, altitudeMode: 'RELATIVE_TO_GROUND', extruded: true, label: label ?? '' });
+                map.append(turnRef.current);
+              } else {
+                turnRef.current.position = position;
+                turnRef.current.label = label ?? '';
+              }
+            } catch {
+              /* turn labels are a nicety */
+            }
+          },
           nudge(bearing, pitch) {
             map.heading = (((Number(map.heading) || 0) + bearing) % 360 + 360) % 360;
             map.tilt = Math.max(0, Math.min(88, (Number(map.tilt) || 0) + pitch));
@@ -159,6 +249,8 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
     return () => {
       cancelled = true;
       walker?.remove();
+      turnRef.current?.remove();
+      turnRef.current = null;
       mapRef.current?.remove();
       mapRef.current = null;
       onReady(null);
@@ -167,42 +259,38 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKey]);
 
-  // Draw the walk on the ground, visible through buildings, with a pin at the start.
+  // Draw the walk on the ground: the plan as a pale line with arrowheads showing
+  // the way, the part already walked in bright orange over it, and a gem at the start.
   useEffect(() => {
     const map = mapRef.current;
     const lib = libRef.current;
     for (const el of routeRef.current) el.remove();
     routeRef.current = [];
+    baseRef.current = null;
+    walkedRef.current = null;
     if (!map || !lib) return;
     try {
       if (legs?.length) {
-        const coordinates = legs.flatMap((l) => l.coords.map(([lng, lat]) => ({ lat, lng })));
-        const line = new lib.Polyline3DElement({
-          coordinates,
-          strokeColor: '#ff6a3d',
-          outerColor: '#ffffff',
-          strokeWidth: 9,
-          outerWidth: 0.35,
-          altitudeMode: 'CLAMP_TO_GROUND',
-          drawsOccludedSegments: true,
-        });
-        map.append(line);
-        routeRef.current.push(line);
+        const path: LngLat[] = legs.flatMap((l) => l.coords);
+        const line = (options: Record<string, unknown>) => {
+          const el = new lib.Polyline3DElement({ altitudeMode: 'CLAMP_TO_GROUND', drawsOccludedSegments: true, ...options });
+          map.append(el);
+          routeRef.current.push(el);
+          return el;
+        };
+        baseRef.current = line({ coordinates: toCoords(path), strokeColor: '#ffffffd9', outerColor: '#1b2a2fb3', strokeWidth: 8, outerWidth: 0.3 });
+        for (const arrow of chevrons(path, 55)) line({ coordinates: toCoords(arrow), strokeColor: '#1b2a2f', strokeWidth: 3.5 });
+        walkedRef.current = line({ coordinates: [], strokeColor: '#ff6a3d', outerColor: '#ffffff', strokeWidth: 11, outerWidth: 0.3 });
       }
-      const pin = new lib.Marker3DElement({
-        position: { lat: start[1], lng: start[0], altitude: 22 },
-        altitudeMode: 'RELATIVE_TO_GROUND',
-        extruded: true,
-        label: 'Start',
-      });
+      const pin = svgMarker(lib, { position: { lat: start[1], lng: start[0], altitude: 24 }, altitudeMode: 'RELATIVE_TO_GROUND', extruded: true, label: 'Start' }, GEM_SVG);
       map.append(pin);
       routeRef.current.push(pin);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     }
-    // onError is stable enough for this purpose.
+    // The map is created asynchronously, so this also re-runs when it becomes ready.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [legs, start, apiKey]);
+  }, [legs, start, apiKey, ready]);
 
   return <div ref={host} className="photoreal" />;
 }

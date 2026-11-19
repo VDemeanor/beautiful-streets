@@ -543,6 +543,49 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     map.easeTo({ bearing: map.getBearing() + bearing, pitch: Math.max(0, Math.min(85, map.getPitch() + pitch)), duration: 500 });
   };
 
+  /** Every change of street along the walk: where it is, which way it bends, and what comes next. */
+  const turns = useMemo(() => {
+    const legs = plan?.route.legs ?? [];
+    const steps = plan?.route.steps ?? [];
+    const out: { at: number; where: LngLat; angle: number; name: string }[] = [];
+    let metres = 0;
+    for (let i = 0; i < legs.length; i++) {
+      if (i > 0 && legs[i].step !== legs[i - 1].step) {
+        const before = legs[i - 1].coords;
+        const after = legs[i].coords;
+        const a = before[Math.max(0, before.length - 2)];
+        const b = before[before.length - 1];
+        const c = after[Math.min(1, after.length - 1)];
+        const toDeg = (p: LngLat, q: LngLat) => (Math.atan2((q[0] - p[0]) * Math.cos((p[1] * Math.PI) / 180), q[1] - p[1]) * 180) / Math.PI;
+        const angle = ((toDeg(b, c) - toDeg(a, b) + 540) % 360) - 180;
+        // The same street continuing, only on its other side, is not a turn.
+        if (steps[legs[i].step]?.name !== steps[legs[i - 1].step]?.name || Math.abs(angle) > 30) out.push({ at: metres, where: b, angle, name: steps[legs[i].step]?.name ?? '' });
+      }
+      // Measured the same way the film measures it, so the countdown reaches zero at the corner.
+      for (let k = 1; k < legs[i].coords.length; k++) metres += haversine(legs[i].coords[k - 1], legs[i].coords[k]);
+    }
+    return out;
+  }, [plan]);
+
+  const nextTurn = film && film.phase === 'travel' ? turns.find((t) => t.at > film.metres + 4) ?? null : null;
+  const turnWord = (angle: number) =>
+    Math.abs(angle) > 150 ? 'Turn around' : Math.abs(angle) < 25 ? 'Continue' : `${Math.abs(angle) < 60 ? 'Bear' : 'Turn'} ${angle < 0 ? 'left' : 'right'}`;
+  const feetOrMiles = (m: number) => (m < 300 ? `${Math.max(10, Math.round((m * 3.28084) / 10) * 10)} ft` : `${miles(m)} mi`);
+
+  // Label the coming turn out in the city, when the stage can.
+  const turnKey = nextTurn ? `${nextTurn.at}` : '';
+  useEffect(() => {
+    if (!real) return;
+    realApi.current?.nextTurn(nextTurn ? nextTurn.where : null, nextTurn?.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turnKey, real, realReady]);
+
+  // Dim the part of the block trail that has been walked.
+  useEffect(() => {
+    const done = film ? Math.floor(film.metres / 35) : -1;
+    crumbs.current.forEach((c, i) => c.getElement().classList.toggle('walked', i < done));
+  }, [film?.metres, film]);
+
   const filmLeg = film && plan ? plan.route.legs[Math.min(film.leg, plan.route.legs.length - 1)] : null;
   const filmStep = filmLeg && plan ? plan.route.steps[filmLeg.step] : null;
 
@@ -702,6 +745,25 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
           <div className="finale" role="status">
             <span>Walk complete</span>
             {Array.from({ length: 14 }, (_, i) => <i key={i} className="spark" style={{ ['--i' as string]: i }} />)}
+          </div>
+        )}
+        {film && film.phase === 'travel' && plan && (
+          <div className="hud" role="status">
+            <div className="hud-turn" key={nextTurn ? `turn-${nextTurn.at}` : 'finish'}>
+              <svg className="hud-arrow" width="44" height="44" viewBox="0 0 44 44" aria-hidden="true">
+                <g transform={`rotate(${nextTurn ? Math.max(-150, Math.min(150, nextTurn.angle)) : 0} 22 22)`}>
+                  <path d="M22 36 V12 M12 21 L22 10 L32 21" fill="none" stroke="currentColor" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" />
+                </g>
+              </svg>
+              <div className="hud-text">
+                <span className="hud-distance">In {feetOrMiles((nextTurn ? nextTurn.at : film.total) - film.metres)}</span>
+                <span className="hud-action">{nextTurn ? `${turnWord(nextTurn.angle)} onto ${nextTurn.name}` : 'Finish where you started'}</span>
+              </div>
+            </div>
+            <div className="hud-progress">
+              <span>{miles(film.metres)} of {miles(film.total)} mi</span>
+              <span>{Math.max(0, Math.round(plan.route.minutes * (1 - film.progress)))} min of walking left</span>
+            </div>
           </div>
         )}
         {film && filmStep && film.phase === 'travel' && (
