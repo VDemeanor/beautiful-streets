@@ -707,10 +707,10 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
               realApi.current = api;
               setRealReady(!!api);
             }}
-            onError={(message) => {
+            onError={(message, keyRefused) => {
               setReal(false);
-              // Forget a key typed here that did not work, so it can be entered again.
-              if (!googleKey) {
+              // Forget a key typed here only if Google refused it, so it can be entered again.
+              if (keyRefused && !googleKey) {
                 try {
                   window.localStorage.removeItem('bs.googleKey');
                 } catch {

@@ -35,7 +35,10 @@ function loadMaps3d(key: string): Promise<Maps3d> {
     if (w.google?.maps?.importLibrary) return ready();
     w.__bsMapsReady = ready;
     // Google reports a rejected key through this global hook.
-    w.gm_authFailure = () => reject(new Error('Google rejected the key. Check that the Maps JavaScript API is enabled for it.'));
+    w.gm_authFailure = () => {
+      w.__bsKeyRefused = true;
+      reject(new Error('Google rejected the key. Check that the Maps JavaScript API is enabled for it and that this site is allowed.'));
+    };
     const s = document.createElement('script');
     s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=beta&loading=async&libraries=maps3d&callback=__bsMapsReady`;
     s.async = true;
@@ -113,7 +116,8 @@ interface Props {
   /** Ground height in metres above sea level near a point, from the walk's own data. */
   altitude: (at: LngLat) => number;
   onReady: (api: PhotorealApi | null) => void;
-  onError: (message: string) => void;
+  /** keyRefused is true only when Google rejected the key itself. */
+  onError: (message: string, keyRefused: boolean) => void;
 }
 
 export default function Photoreal({ apiKey, start, legs, altitude, onReady, onError }: Props) {
@@ -185,10 +189,34 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
           },
           height,
           reveal(path) {
-            if (baseRef.current) baseRef.current.coordinates = toCoords(path.length > 1 ? path : []);
+            try {
+              if (baseRef.current && path.length > 1) baseRef.current.coordinates = toCoords(path);
+            } catch (err) {
+              console.warn('[beautiful-streets] reveal failed', err);
+            }
           },
           trail(path) {
-            if (walkedRef.current) walkedRef.current.coordinates = toCoords(path.length > 1 ? path : []);
+            try {
+              if (path.length < 2) {
+                walkedRef.current?.remove();
+                walkedRef.current = null;
+                return;
+              }
+              if (!walkedRef.current) {
+                walkedRef.current = new lib.Polyline3DElement({
+                  coordinates: toCoords(path),
+                  altitudeMode: 'CLAMP_TO_GROUND',
+                  drawsOccludedSegments: true,
+                  strokeColor: '#ff6a3d',
+                  outerColor: '#ffffff',
+                  strokeWidth: 11,
+                  outerWidth: 0.3,
+                });
+                map.append(walkedRef.current);
+              } else walkedRef.current.coordinates = toCoords(path);
+            } catch (err) {
+              console.warn('[beautiful-streets] trail failed', err);
+            }
           },
           settle() {
             try {
@@ -244,7 +272,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
         });
       })
       .catch((err) => {
-        if (!cancelled) onError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) onError(err instanceof Error ? err.message : String(err), !!(window as any).__bsKeyRefused);
       });
     return () => {
       cancelled = true;
@@ -267,27 +295,37 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
     for (const el of routeRef.current) el.remove();
     routeRef.current = [];
     baseRef.current = null;
-    walkedRef.current = null;
     if (!map || !lib) return;
-    try {
-      if (legs?.length) {
-        const path: LngLat[] = legs.flatMap((l) => l.coords);
-        const line = (options: Record<string, unknown>) => {
-          const el = new lib.Polyline3DElement({ altitudeMode: 'CLAMP_TO_GROUND', drawsOccludedSegments: true, ...options });
-          map.append(el);
-          routeRef.current.push(el);
-          return el;
-        };
-        baseRef.current = line({ coordinates: toCoords(path), strokeColor: '#ffffffd9', outerColor: '#1b2a2fb3', strokeWidth: 8, outerWidth: 0.3 });
-        for (const arrow of chevrons(path, 55)) line({ coordinates: toCoords(arrow), strokeColor: '#1b2a2f', strokeWidth: 3.5 });
-        walkedRef.current = line({ coordinates: [], strokeColor: '#ff6a3d', outerColor: '#ffffff', strokeWidth: 11, outerWidth: 0.3 });
+    // Each part is drawn on its own, so one unsupported option cannot take the rest down.
+    const attempt = (what: string, draw: () => void) => {
+      try {
+        draw();
+      } catch (err) {
+        console.warn(`[beautiful-streets] could not draw ${what}`, err);
       }
+    };
+    const line = (options: Record<string, unknown>) => {
+      const el = new lib.Polyline3DElement({ altitudeMode: 'CLAMP_TO_GROUND', drawsOccludedSegments: true, ...options });
+      map.append(el);
+      routeRef.current.push(el);
+      return el;
+    };
+    if (legs?.length) {
+      const path: LngLat[] = legs.flatMap((l) => l.coords);
+      attempt('the route', () => {
+        baseRef.current = line({ coordinates: toCoords(path), strokeColor: '#ffffff', outerColor: '#1b2a2f', strokeWidth: 8, outerWidth: 0.3 });
+      });
+      attempt('the direction arrows', () => {
+        for (const arrow of chevrons(path, 55)) line({ coordinates: toCoords(arrow), strokeColor: '#1b2a2f', strokeWidth: 4 });
+      });
+    }
+    walkedRef.current?.remove();
+    walkedRef.current = null;
+    attempt('the start marker', () => {
       const pin = svgMarker(lib, { position: { lat: start[1], lng: start[0], altitude: 24 }, altitudeMode: 'RELATIVE_TO_GROUND', extruded: true, label: 'Start' }, GEM_SVG);
       map.append(pin);
       routeRef.current.push(pin);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    }
+    });
     // The map is created asynchronously, so this also re-runs when it becomes ready.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [legs, start, apiKey, ready]);
