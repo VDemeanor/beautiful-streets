@@ -7,7 +7,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as SunCalc from 'suncalc';
 import { haversine } from '@/lib/geo';
 import { startBirds } from './birds';
-import { Flight, RIGS, type FlightState } from './flight';
+import { Flight, mapStage, RIGS, type FlightState } from './flight';
+import Photoreal, { type PhotorealApi } from './Photoreal';
 import { applySun, CAMERA_3D, installScene, installTrees, setSceneMode, sunOnScreen, type Sun } from './scene';
 import type { LngLat, Route, RouteLeg, Side, WalkContext } from '@/lib/types';
 
@@ -79,7 +80,7 @@ function SideGlyph({ side }: { side: Side }) {
   );
 }
 
-export default function App({ mapStyle }: { mapStyle: string }) {
+export default function App({ mapStyle, googleKey }: { mapStyle: string; googleKey: string }) {
   const mapEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const startMarker = useRef<maplibregl.Marker | null>(null);
@@ -100,6 +101,13 @@ export default function App({ mapStyle }: { mapStyle: string }) {
   const flightRef = useRef<Flight | null>(null);
   const [film, setFilm] = useState<FlightState | null>(null);
   const [scores, setScores] = useState(false);
+  // The photoreal city: Google's real buildings in place of the drawn ones.
+  const [real, setReal] = useState(false);
+  const [gKey, setGKey] = useState(googleKey);
+  const [askKey, setAskKey] = useState(false);
+  const [keyDraft, setKeyDraft] = useState('');
+  const realApi = useRef<PhotorealApi | null>(null);
+  const [realReady, setRealReady] = useState(false);
   const introFor = useRef<unknown>(null);
   const [sunSpot, setSunSpot] = useState<{ x: number; y: number; above: boolean } | null>(null);
   const [skyPhase, setSkyPhase] = useState<'night' | 'golden' | 'day'>('day');
@@ -434,14 +442,14 @@ export default function App({ mapStyle }: { mapStyle: string }) {
     if (!map || !plan || !view) return;
     flightRef.current?.dispose();
     setThreeD(true);
-    const flight = new Flight(map, plan.route.legs, view, setFilm, calm());
+    const flight = new Flight(real && realApi.current ? realApi.current.stage : mapStage(map), plan.route.legs, view, setFilm, calm());
     if (!flight.valid) {
       flight.dispose();
       return;
     }
     flightRef.current = flight;
     flight.play();
-  }, [plan, overview]);
+  }, [plan, overview, real]);
 
   // After the last frame, hold briefly, then hand the map back.
   useEffect(() => {
@@ -452,8 +460,84 @@ export default function App({ mapStyle }: { mapStyle: string }) {
 
   useEffect(() => () => flightRef.current?.dispose(), []);
 
+  // A key saved in this browser earlier.
+  useEffect(() => {
+    if (gKey) return;
+    try {
+      const saved = window.localStorage.getItem('bs.googleKey');
+      if (saved) setGKey(saved);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [gKey]);
+
+  /** Ground height near a point, taken from the walk's own blocks. */
+  const altitude = useCallback(
+    (at: LngLat) => {
+      const legs = plan?.route.legs;
+      if (!legs?.length) return 60;
+      let best = 60;
+      let bestD = Infinity;
+      for (const l of legs) {
+        if (l.elev == null) continue;
+        const m = l.coords[Math.floor(l.coords.length / 2)];
+        const d = (m[0] - at[0]) ** 2 + (m[1] - at[1]) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = l.elev;
+        }
+      }
+      return best;
+    },
+    [plan],
+  );
+
+  const toggleReal = () => {
+    if (real) {
+      endFilm();
+      setReal(false);
+      return;
+    }
+    if (!gKey) {
+      setAskKey(true);
+      return;
+    }
+    endFilm();
+    setThreeD(true);
+    setReal(true);
+  };
+
+  const saveKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    const k = keyDraft.trim();
+    if (!k) return;
+    try {
+      window.localStorage.setItem('bs.googleKey', k);
+    } catch {
+      /* storage unavailable; the key still works for this visit */
+    }
+    setGKey(k);
+    setKeyDraft('');
+    setAskKey(false);
+    endFilm();
+    setThreeD(true);
+    setReal(true);
+  };
+
+  // Keep the photoreal camera on the walk when it changes.
+  useEffect(() => {
+    if (!real || !realReady || film) return;
+    const view = overview() ?? (start ? { center: start, zoom: 15.6 } : null);
+    if (view) realApi.current?.frame(view, CAMERA_3D.pitch, CAMERA_3D.bearing);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [real, realReady, plan]);
+
   /** Nudge the camera by hand: rotate around the view, or tilt up and down. */
   const nudge = (bearing: number, pitch: number) => {
+    if (real && realApi.current) {
+      realApi.current.nudge(bearing, pitch);
+      return;
+    }
     const map = mapRef.current;
     if (!map) return;
     map.easeTo({ bearing: map.getBearing() + bearing, pitch: Math.max(0, Math.min(85, map.getPitch() + pitch)), duration: 500 });
@@ -464,7 +548,7 @@ export default function App({ mapStyle }: { mapStyle: string }) {
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(''), 2500);
+    const t = setTimeout(() => setToast(''), 6000);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -565,10 +649,50 @@ export default function App({ mapStyle }: { mapStyle: string }) {
 
   return (
     <div className={`shell${film ? ' filming' : ''}`}>
-      <div className={`map ${skyPhase}${threeD ? ' scene' : ''}${film ? ' cinema' : ''}`}>
+      <div className={`map ${skyPhase}${threeD ? ' scene' : ''}${film ? ' cinema' : ''}${real ? ' real' : ''}`}>
         <div ref={mapEl} className="map-canvas" />
         {sunSpot && (
           <div className={`sun ${skyPhase}${sunSpot.above ? ' above' : ''}`} style={{ left: sunSpot.x, top: sunSpot.y }} aria-hidden="true" />
+        )}
+        {real && gKey && start && (
+          <Photoreal
+            apiKey={gKey}
+            start={start}
+            legs={plan?.route.legs ?? null}
+            altitude={altitude}
+            onReady={(api) => {
+              realApi.current = api;
+              setRealReady(!!api);
+            }}
+            onError={(message) => {
+              setReal(false);
+              // Forget a key typed here that did not work, so it can be entered again.
+              if (!googleKey) {
+                try {
+                  window.localStorage.removeItem('bs.googleKey');
+                } catch {
+                  /* storage unavailable */
+                }
+                setGKey('');
+              }
+              setToast(`Real buildings could not load. ${message}`);
+            }}
+          />
+        )}
+        {askKey && (
+          <form className="card key-card" onSubmit={saveKey}>
+            <header>
+              <strong>Real buildings need a Google Maps key</strong>
+              <button type="button" className="close" aria-label="Close" onClick={() => setAskKey(false)}>×</button>
+            </header>
+            <p className="muted">
+              Create a key in Google Cloud with the Maps JavaScript API enabled, then paste it here. It is saved in this browser only.
+            </p>
+            <div className="row">
+              <input type="text" value={keyDraft} onChange={(e) => setKeyDraft(e.target.value)} placeholder="Google Maps key" aria-label="Google Maps key" autoFocus />
+              <button className="btn primary" type="submit">Show the real city</button>
+            </div>
+          </form>
         )}
         <canvas ref={birdsEl} className="birds" aria-hidden="true" />
         {threeD && <div className="grade" aria-hidden="true" />}
@@ -609,14 +733,15 @@ export default function App({ mapStyle }: { mapStyle: string }) {
           </div>
         ) : (
           <div className="dock" role="group" aria-label="Map view">
-            <button className="tbtn" aria-pressed={threeD} onClick={() => setThreeD((v) => !v)}>3D</button>
+            <button className="tbtn" aria-pressed={threeD} onClick={() => { if (real) { setReal(false); return; } setThreeD((v) => !v); }}>3D</button>
+            <button className="tbtn" aria-pressed={real} title="Real facades and roofs from aerial imagery" onClick={toggleReal}>Real</button>
             {threeD && (
               <>
                 <button className="tbtn" aria-label="Rotate left" onClick={() => nudge(-35, 0)}>↺</button>
                 <button className="tbtn" aria-label="Rotate right" onClick={() => nudge(35, 0)}>↻</button>
                 <button className="tbtn" aria-label="Tilt toward the horizon" onClick={() => nudge(0, 10)}>▲</button>
                 <button className="tbtn" aria-label="Tilt toward the ground" onClick={() => nudge(0, -10)}>▼</button>
-                <button className="tbtn" aria-pressed={scores} title="Colour every street by its beauty score" onClick={() => setScores((v) => !v)}>Scores</button>
+                {!real && <button className="tbtn" aria-pressed={scores} title="Colour every street by its beauty score" onClick={() => setScores((v) => !v)}>Scores</button>}
               </>
             )}
             {plan && <button className="tbtn play" onClick={startFilm}>▶ Play the walk</button>}

@@ -130,6 +130,7 @@ export function designWalk(input: PlanInput): Route | null {
       score: score(t.block),
       forward: t.forward,
       step: 0,
+      elev: t.block.elev,
     };
   });
 

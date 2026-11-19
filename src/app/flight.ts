@@ -33,7 +33,7 @@ export interface FlightState {
   speed: number;
 }
 
-interface Shot {
+export interface Shot {
   look: LngLat;
   bearing: number;
   pitch: number;
@@ -41,7 +41,69 @@ interface Shot {
   lens: number;
 }
 
-const NORMAL_LENS = 36.87;
+/**
+ * Whatever the film is shot on. The built-in 3D map and the photoreal city
+ * both implement this, so the same film plays on either.
+ */
+export interface Stage {
+  /** Where the camera is right now. */
+  current(): Shot;
+  /** Point the camera. */
+  apply(shot: Shot): void;
+  /** Move the glowing walker, or remove it with null. */
+  walker(at: LngLat | null): void;
+  /** Ground height in metres, if the stage can tell; used to keep the camera above hills. */
+  ground?(at: LngLat): number;
+  /** Height of the picture in CSS pixels. */
+  height(): number;
+  /** Cancel any camera motion in progress and restore the normal lens. */
+  settle(): void;
+}
+
+/** Distance from the camera to what it looks at, in metres. */
+export function cameraDistance(shot: Shot, pictureHeight: number): number {
+  const rad = Math.PI / 180;
+  const metresPerPixel = (78271.5 * Math.cos(shot.look[1] * rad)) / 2 ** shot.zoom;
+  return (pictureHeight / 2 / Math.tan((shot.lens * rad) / 2)) * metresPerPixel;
+}
+
+/** The stage for the built-in MapLibre scene. */
+export function mapStage(map: maplibregl.Map): Stage {
+  let orb: maplibregl.Marker | null = null;
+  return {
+    current() {
+      const c = map.getCenter();
+      return { look: [c.lng, c.lat], bearing: map.getBearing(), pitch: map.getPitch(), zoom: map.getZoom(), lens: map.getVerticalFieldOfView?.() ?? NORMAL_LENS };
+    },
+    apply(s) {
+      map.setVerticalFieldOfView?.(s.lens);
+      map.jumpTo({ center: s.look, bearing: s.bearing, pitch: s.pitch, zoom: s.zoom });
+    },
+    walker(at) {
+      if (!at) {
+        orb?.remove();
+        orb = null;
+        return;
+      }
+      if (!orb) {
+        const el = document.createElement('div');
+        el.className = 'walker';
+        el.innerHTML =
+          '<span class="walker-glow"></span><span class="walker-core"></span>' +
+          Array.from({ length: 5 }, (_, i) => `<i class="spark" style="--i:${i}"></i>`).join('');
+        orb = new maplibregl.Marker({ element: el, opacityWhenCovered: '1' }).setLngLat(at).addTo(map);
+      } else orb.setLngLat(at);
+    },
+    ground: (at) => map.queryTerrainElevation(at) ?? 0,
+    height: () => map.getContainer().getBoundingClientRect().height,
+    settle() {
+      map.stop();
+      map.setVerticalFieldOfView?.(NORMAL_LENS);
+    },
+  };
+}
+
+export const NORMAL_LENS = 36.87;
 const SHOT_METRES = 170;
 /** The director's running order. Tracking shots alternate sides of the street. */
 const SEQUENCE: Exclude<Rig, 'director'>[] = ['chase', 'side', 'drone', 'chase', 'orbit', 'side', 'chase', 'drone'];
@@ -64,13 +126,12 @@ export class Flight {
   private shotIndex = -1;
   private pitchLimit: number | null = null;
   private from: Shot;
-  private walker: maplibregl.Marker;
   private state: FlightState;
   private introMs: number;
   private finaleMs: number;
 
   constructor(
-    private map: maplibregl.Map,
+    private stage: Stage,
     legs: RouteLeg[],
     private overview: { center: LngLat; zoom: number },
     private onState: (s: FlightState) => void,
@@ -88,15 +149,8 @@ export class Flight {
     this.total = this.cum[this.cum.length - 1];
     this.introMs = calm ? 0 : 7200;
     this.finaleMs = calm ? 0 : 8600;
-    const c = map.getCenter();
-    this.from = { look: [c.lng, c.lat], bearing: map.getBearing(), pitch: map.getPitch(), zoom: map.getZoom(), lens: NORMAL_LENS };
-
-    const orb = document.createElement('div');
-    orb.className = 'walker';
-    orb.innerHTML =
-      '<span class="walker-glow"></span><span class="walker-core"></span>' +
-      Array.from({ length: 5 }, (_, i) => `<i class="spark" style="--i:${i}"></i>`).join('');
-    this.walker = new maplibregl.Marker({ element: orb, opacityWhenCovered: '1' }).setLngLat(this.at(0)).addTo(map);
+    this.from = stage.current();
+    stage.walker(this.at(0));
 
     this.state = { playing: false, phase: this.introMs ? 'intro' : 'travel', progress: 0, leg: 0, cuts: 0, rig: 'director', speed: 1 };
   }
@@ -141,12 +195,11 @@ export class Flight {
    * Francisco's slopes a low camera looking uphill can end up underground.
    */
   private safePitch(s: Shot): number {
+    const ground = this.stage.ground?.bind(this.stage);
+    if (!ground) return s.pitch;
     try {
       const rad = Math.PI / 180;
-      const box = this.map.getContainer().getBoundingClientRect();
-      const metresPerPixel = (78271.5 * Math.cos(s.look[1] * rad)) / 2 ** s.zoom;
-      const distance = (box.height / 2 / Math.tan((s.lens * rad) / 2)) * metresPerPixel;
-      const ground = (p: LngLat) => this.map.queryTerrainElevation(p) ?? 0;
+      const distance = cameraDistance(s, this.stage.height());
       const lookGround = ground(s.look);
       for (let pitch = s.pitch; pitch > 45; pitch -= 3) {
         const back = distance * Math.sin(pitch * rad);
@@ -168,8 +221,7 @@ export class Flight {
     // Ease toward the safe tilt so the correction itself is not a jolt.
     const safe = this.safePitch(s);
     this.pitchLimit = this.pitchLimit === null ? safe : lerp(this.pitchLimit, safe, 0.12);
-    this.map.setVerticalFieldOfView?.(s.lens);
-    this.map.jumpTo({ center: s.look, bearing: s.bearing, pitch: Math.min(s.pitch, this.pitchLimit), zoom: s.zoom });
+    this.stage.apply({ ...s, pitch: Math.min(s.pitch, this.pitchLimit) });
   }
 
   private emit(patch: Partial<FlightState>) {
@@ -246,7 +298,7 @@ export class Flight {
         };
       }
       this.apply(this.cam);
-      this.walker.setLngLat(this.at(this.d));
+      this.stage.walker(this.at(this.d));
       const progress = this.d / this.total;
       if (this.d >= this.total) {
         this.phaseMs = 0;
@@ -282,7 +334,7 @@ export class Flight {
   private finish() {
     cancelAnimationFrame(this.raf);
     this.raf = 0;
-    this.map.setVerticalFieldOfView?.(NORMAL_LENS);
+    this.stage.settle();
     this.emit({ phase: 'done', playing: false });
   }
 
@@ -316,7 +368,7 @@ export class Flight {
       const rig = this.state.rig === 'director' ? SEQUENCE[index % SEQUENCE.length] : this.state.rig;
       this.cam = this.shot(rig, this.d, (this.d % SHOT_METRES) / SHOT_METRES, index % 2 === 1);
       this.apply(this.cam);
-      this.walker.setLngLat(this.at(this.d));
+      this.stage.walker(this.at(this.d));
     }
   }
 
@@ -334,8 +386,7 @@ export class Flight {
   dispose() {
     cancelAnimationFrame(this.raf);
     this.raf = 0;
-    this.map.stop();
-    this.map.setVerticalFieldOfView?.(NORMAL_LENS);
-    this.walker.remove();
+    this.stage.settle();
+    this.stage.walker(null);
   }
 }

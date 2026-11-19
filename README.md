@@ -80,6 +80,19 @@ Any Node host works. For a hosted database set `DATABASE_URL` and
 `DATABASE_AUTH_TOKEN` to a Turso/libSQL database (see `.env.example`). The
 basemap defaults to OpenFreeMap; change `NEXT_PUBLIC_MAP_STYLE` to use another.
 
+## Views
+
+- **Map**: the flat working map, with street scores and labels.
+- **3D**: the drawn city: terrain, textured buildings by type, street trees,
+  asphalt roads, sun, sky and gulls.
+- **Real**: Google's photorealistic 3D Maps, with the true facades and roofs.
+  It needs a Google Maps Platform key with the Maps JavaScript API enabled. Set
+  `GOOGLE_MAPS_KEY` on the server, or press "Real" and paste a key, which is
+  then kept in that browser only.
+
+"Play the walk" films the route on the 3D or Real view: an establishing shot,
+the walk cut between street, tracking, drone and orbit cameras, and a finale.
+
 ## Known limits
 
 - Architecture is the weakest map-data score: OpenStreetMap says little about

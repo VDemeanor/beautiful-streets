@@ -93,6 +93,8 @@ export interface RouteLeg {
   forward: boolean;
   /** Index into Route.steps. */
   step: number;
+  /** Ground height of the block in metres above sea level, when known. */
+  elev: number | null;
 }
 
 export interface RouteStep {
