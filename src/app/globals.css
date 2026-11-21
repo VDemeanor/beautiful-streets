@@ -187,6 +187,12 @@ input[type='text'], input[type='datetime-local'] {
   background: radial-gradient(circle, rgba(255, 206, 120, 0.7), rgba(255, 206, 120, 0) 68%);
   animation: glow 1.3s ease-in-out infinite;
 }
+/* A shaft of light over the walker, so they can be found from far off. */
+.walker-beam {
+  position: absolute; left: 50%; bottom: 50%; width: 5px; height: 96px; margin-left: -2.5px; border-radius: 3px;
+  background: linear-gradient(to top, rgba(255, 236, 190, 0.95), rgba(255, 170, 80, 0.55) 45%, rgba(255, 150, 60, 0));
+  box-shadow: 0 0 14px 3px rgba(255, 190, 110, 0.55);
+}
 @keyframes glow { 0%, 100% { transform: scale(0.8); opacity: 0.7; } 50% { transform: scale(1.25); opacity: 1; } }
 
 /* The sun, placed where it really is in the sky. */

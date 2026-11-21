@@ -73,7 +73,7 @@ function svgMarker(lib: Maps3d, options: Record<string, unknown>, svg: string): 
 
 /** A glowing marker that floats over the walker. */
 const BEACON_SVG =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">' +
+  '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 34 34">' +
   '<defs><radialGradient id="b"><stop offset="0" stop-color="#ffd27a" stop-opacity=".95"/><stop offset="1" stop-color="#ffb23e" stop-opacity="0"/></radialGradient></defs>' +
   '<circle cx="17" cy="17" r="16" fill="url(#b)"/><circle cx="17" cy="17" r="6" fill="#e2542f" stroke="#fff" stroke-width="2.5"/></svg>';
 
@@ -152,6 +152,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
     let walker: any[] = [];
     let walkerWarned = false;
     let beacon: any = null;
+    let pillar: any = null;
     let steady = true;
     const fleet = new Map<number, any>();
     const pickups = new Map<string, any>();
@@ -205,6 +206,8 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
               walker = [];
               beacon?.remove();
               beacon = null;
+              pillar?.remove();
+              pillar = null;
               return;
             }
             try {
@@ -213,7 +216,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
               const tune = (window as any).__bsWalkerTune ?? { heading: 180, tilt: 270, altitude: 0, mode: 'RELATIVE_TO_MESH' };
               const step = Math.floor((performance.now() / 1000) * 1.7 * 4) % 4;
               // Up close the figure is life size; from further off it grows so it can still be found.
-              const scale = Math.max(1.3, Math.min(9, (Number(map.range) || 60) / 26));
+              const scale = Math.max(1.6, Math.min(12, (Number(map.range) || 60) / 20));
               const orientation = { heading: (((heading + tune.heading) % 360) + 360) % 360, tilt: tune.tilt, roll: 0 };
               if (!walker.length) {
                 for (let i = 0; i < 4; i++) {
@@ -225,9 +228,19 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
               // A beacon over their head, so they can be found from the air.
               const over = { lat: at[1], lng: at[0], altitude: 2.4 * scale + 3 };
               if (!beacon) {
-                beacon = svgMarker(lib, { position: over, altitudeMode: 'RELATIVE_TO_MESH' }, BEACON_SVG);
+                // Drawn even when a building is in the way, so the walker can always be found.
+                beacon = svgMarker(lib, { position: over, altitudeMode: 'RELATIVE_TO_MESH', drawsWhenOccluded: true }, BEACON_SVG);
                 map.append(beacon);
               } else beacon.position = over;
+              // A shaft of light standing over them, like a waypoint in a game.
+              const shaft = [
+                { lat: at[1], lng: at[0], altitude: 1 },
+                { lat: at[1], lng: at[0], altitude: 30 + 12 * scale },
+              ];
+              if (!pillar) {
+                pillar = new lib.Polyline3DElement({ path: shaft, altitudeMode: 'RELATIVE_TO_GROUND', drawsOccludedSegments: true, strokeColor: '#ffd98a', outerColor: '#ff7a3d', strokeWidth: 7, outerWidth: 0.45 });
+                map.append(pillar);
+              } else pillar.path = shaft;
               walker.forEach((model, i) => {
                 model.position = { lat: at[1], lng: at[0], altitude: i === step ? tune.altitude : -500 };
                 model.orientation = orientation;
@@ -241,7 +254,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
           ground: (at) => altitudeRef.current(at),
           // The photographed city is sharp from rooftop height and a rough mesh at eye level, and
           // low cameras get lost behind buildings and trees, so here every shot is flown from above.
-          street: { distance: 150, pitch: 60 },
+          street: { distance: 160, pitch: 52 },
           // Google sends a rough city first and the detail a moment later, so the film travels
           // slower here and waits while detail is still arriving.
           pace: 0.42,
@@ -394,6 +407,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
       cancelled = true;
       for (const model of walker) model.remove();
       beacon?.remove();
+      pillar?.remove();
       for (const model of fleet.values()) model.remove();
       fleet.clear();
       for (const marker of pickups.values()) marker.remove();

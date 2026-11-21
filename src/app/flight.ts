@@ -110,7 +110,7 @@ export function mapStage(map: maplibregl.Map): Stage {
         // A pool of light at their feet.
         const el = document.createElement('div');
         el.className = 'walker';
-        el.innerHTML = '<span class="walker-glow"></span>' + Array.from({ length: 4 }, (_, i) => `<i class="spark" style="--i:${i}"></i>`).join('');
+        el.innerHTML = '<span class="walker-beam"></span><span class="walker-glow"></span>' + Array.from({ length: 4 }, (_, i) => `<i class="spark" style="--i:${i}"></i>`).join('');
         orb = new maplibregl.Marker({ element: el, opacityWhenCovered: '1' }).setLngLat(at).addTo(map);
       } else orb.setLngLat(at);
     },
@@ -255,13 +255,13 @@ export class Flight {
       }
       case 'side': {
         const look = this.at(d);
-        return { look, bearing: h + (flip ? -82 : 82), pitch: this.aerial ? 55 : 74, zoom: this.zoomFor((this.aerial ? 170 : 62) - 8 * t, 52, look), lens: 52 };
+        return { look, bearing: h + (flip ? -82 : 82), pitch: this.aerial ? 40 : 74, zoom: this.zoomFor((this.aerial ? 190 : 62) - 8 * t, 52, look), lens: 52 };
       }
       case 'drone':
-        return { look: this.at(d + 45), bearing: h - 28 + 56 * t, pitch: 56, zoom: 16.45, lens: 40 };
+        return { look: this.at(d + 45), bearing: h - 28 + 56 * t, pitch: this.aerial ? 46 : 56, zoom: 16.45, lens: 40 };
       case 'orbit':
         // Among real buildings a low circling camera keeps losing the walker behind them, so it rides higher.
-        return { look: this.at(d), bearing: h + 40 + 220 * t, pitch: this.stage.street ? 58 : 72, zoom: 17.1, lens: 50 };
+        return { look: this.at(d), bearing: h + 40 + 220 * t, pitch: this.aerial ? 42 : 72, zoom: 17.1, lens: 50 };
     }
   }
 

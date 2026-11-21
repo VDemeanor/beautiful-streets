@@ -180,7 +180,23 @@ export interface LoopResult {
   repeatFrac: number;
 }
 
-function evaluate(path: Traversal[], score: ScoreFn, targetM: number): LoopResult & { objective: number } {
+/**
+ * Take out the places where the walk goes down a block and straight back again.
+ * A car might need that to turn round; a person just turns on the spot.
+ */
+function withoutDoublingBack(path: Traversal[]): Traversal[] {
+  const out: Traversal[] = [];
+  for (const t of path) {
+    const last = out[out.length - 1];
+    if (last && last.block.id === t.block.id && last.forward !== t.forward) out.pop();
+    else out.push(t);
+  }
+  // A walk that is nothing but there-and-back stays as it is.
+  return out.length >= 2 ? out : path;
+}
+
+function evaluate(raw: Traversal[], score: ScoreFn, targetM: number): LoopResult & { objective: number } {
+  const path = withoutDoublingBack(raw);
   const seen = new Set<string>();
   let lengthM = 0;
   let weighted = 0;

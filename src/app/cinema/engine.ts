@@ -289,6 +289,18 @@ export function createEngine(host: HTMLElement, options: Options): CinemaApi {
     const walk = model.animations.find((a) => /walk/i.test(a.name)) ?? model.animations[0];
     if (walk) mixer.clipAction(walk).play();
   });
+  // A shaft of light standing over the walker, like a waypoint in a game. It is drawn over
+  // everything, so they can be found even behind a building.
+  const pillar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.22, 0.5, 34, 12, 1, true).translate(0, 19, 0),
+    new THREE.MeshBasicMaterial({ color: 0xffc46b, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, toneMapped: false, side: THREE.DoubleSide }),
+  );
+  pillar.renderOrder = 5;
+  walker.add(pillar);
+  const flare = new THREE.Mesh(new THREE.SphereGeometry(0.55, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffe2a8, toneMapped: false, depthTest: false, transparent: true, opacity: 0.95 }));
+  flare.position.y = 2.6;
+  flare.renderOrder = 6;
+  walker.add(flare);
   // A soft light the walker carries, so they can be found at night.
   const halo = new THREE.PointLight(0xffc98a, 0, 26, 1.6);
   halo.position.y = 2.4;
@@ -515,11 +527,11 @@ export function createEngine(host: HTMLElement, options: Options): CinemaApi {
       // The figure is modelled facing north.
       walker.rotation.y = -heading * RAD;
       // Life size up close; larger from a distance, so they can still be found.
-      walkerScale = clamp(cameraDistance(view, height()) / 30, 1.15, 9);
+      walkerScale = clamp(cameraDistance(view, height()) / 22, 1.4, 12);
     },
     ground,
     // Close enough to feel like being in the street, high enough to clear the street trees.
-    street: { distance: 120, pitch: 64 },
+    street: { distance: 130, pitch: 56 },
     pace: 0.42,
     busy: () => tiles.loadProgress < 0.97,
     sees(s) {
