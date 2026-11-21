@@ -1038,7 +1038,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
 
   return (
     <div className={`shell${film ? ' filming' : ''}`}>
-      <div className={`map ${skyPhase}${threeD ? ' scene' : ''}${film ? ' cinema' : ''}${real ? ' real' : ''}`}>
+      <div className={`map ${skyPhase}${threeD ? ' scene' : ''}${film ? ' cinema' : ''}${real ? ' real' : ''}${timeMode === 'night' ? ' dusk' : ''}`}>
         <div ref={mapEl} className="map-canvas" />
         {sunSpot && (
           <div className={`sun ${skyPhase}${sunSpot.above ? ' above' : ''}`} style={{ left: sunSpot.x, top: sunSpot.y }} aria-hidden="true" />
@@ -1168,7 +1168,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
                   title="Show the city as it is now, by day, or by night"
                   onClick={() => setTimeMode((m) => (m === 'auto' ? 'day' : m === 'day' ? 'night' : 'auto'))}
                 >
-                  {timeMode === 'auto' ? 'Now' : timeMode === 'day' ? 'Day' : 'Night'}
+                  {timeMode === 'auto' ? 'Light: auto' : timeMode === 'day' ? 'Light: day' : 'Light: night'}
                 </button>
               </>
             )}

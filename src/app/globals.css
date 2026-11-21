@@ -335,8 +335,15 @@ input[type='text'], input[type='datetime-local'] {
     linear-gradient(to bottom, rgba(70, 140, 220, 0.08), rgba(255, 190, 120, 0.1));
   mix-blend-mode: soft-light;
 }
-/* The photographs cannot be relit, so night there is a deep blue dusk laid over daylight. */
+/* The photographs cannot be relit, so they stay in daylight whatever the hour, unless night is asked for. */
 .map.real.night .grade {
+  background:
+    radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(12, 22, 40, 0.38) 100%),
+    linear-gradient(to bottom, rgba(70, 140, 220, 0.08), rgba(255, 190, 120, 0.1));
+  mix-blend-mode: soft-light;
+}
+/* Asked for, night on the photographs is a deep blue dusk laid over them. */
+.map.real.night.dusk .grade {
   background: linear-gradient(to bottom, rgba(14, 24, 70, 0.8), rgba(26, 32, 84, 0.66) 55%, rgba(58, 40, 76, 0.58));
   mix-blend-mode: multiply;
 }
