@@ -180,26 +180,13 @@ input[type='text'], input[type='datetime-local'] {
 @keyframes pop { from { transform: scale(0) rotate(90deg); opacity: 0; } to { transform: scale(1) rotate(0); opacity: 1; } }
 @keyframes shimmer { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.55); } }
 
-/* You, during the fly-through: a small figure walking in a pool of light. */
-.walker { position: relative; width: 30px; height: 44px; pointer-events: none; }
+/* The pool of light at the walker's feet; the walker is a 3D figure in the scene. */
+.walker { position: relative; width: 26px; height: 26px; pointer-events: none; }
 .walker-glow {
-  position: absolute; left: 50%; bottom: -9px; width: 50px; height: 22px; margin-left: -25px; border-radius: 50%;
-  background: radial-gradient(ellipse, rgba(255, 200, 110, 0.9), rgba(255, 200, 110, 0) 70%);
+  position: absolute; inset: -12px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 206, 120, 0.7), rgba(255, 206, 120, 0) 68%);
   animation: glow 1.3s ease-in-out infinite;
 }
-.walker-figure {
-  position: absolute; inset: 0; overflow: visible;
-  filter: drop-shadow(0 0 1.2px #fff) drop-shadow(0 0 1.2px #fff) drop-shadow(0 2px 3px rgba(0, 0, 0, 0.55));
-  animation: bob 0.43s ease-in-out infinite alternate;
-}
-.walker-figure .limb { fill: none; stroke: #e2542f; stroke-width: 4.6; stroke-linecap: round; }
-.walker-figure circle { fill: #ffd27a; stroke: #e2542f; stroke-width: 1.6; }
-.walker-figure .leg { transform-origin: 15px 26px; animation: stride 0.86s ease-in-out infinite; }
-.walker-figure .arm { transform-origin: 15px 16px; animation: stride 0.86s ease-in-out infinite reverse; stroke-width: 3.6; }
-.walker-figure .b { animation-delay: -0.43s; }
-.walker .spark { top: 16px; }
-@keyframes stride { 0%, 100% { transform: rotate(-26deg); } 50% { transform: rotate(26deg); } }
-@keyframes bob { from { transform: translateY(0); } to { transform: translateY(-1.5px); } }
 @keyframes glow { 0%, 100% { transform: scale(0.8); opacity: 0.7; } 50% { transform: scale(1.25); opacity: 1; } }
 
 /* The sun, placed where it really is in the sky. */

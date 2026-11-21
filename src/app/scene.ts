@@ -189,11 +189,52 @@ export function installScene(map: maplibregl.Map) {
   }
 }
 
-/** Street trees as little block trees: a brown trunk under a green cube. */
+/** Leaf colours: four kinds of tree, each darker underneath and lighter where the crown catches the light. */
+const LEAVES = ['#3f8a4c', '#56a25a', '#2f7446', '#7c9a4e'];
+const treeColours = (night: boolean) => [
+  'match',
+  ['get', 'k'],
+  ...LEAVES.flatMap((c, v) => [mix(c, '#12281c', 0.34), c, mix(c, '#e6f2b4', 0.24)].map((tone, t) => [v * 3 + t, night ? mix(tone, NIGHT_INK, 0.78) : tone])).flat(),
+  '#3f8a4c',
+];
+
+/**
+ * A crown for every tree: three stacked rounds, widest in the middle, each a
+ * little off-centre and turned, so no two trees are the same shape. Sizes
+ * vary from saplings to big street trees, and one in nine is a tall cypress.
+ */
+function crowns(trees: LngLat[]): FeatureCollection {
+  const features: Feature[] = [];
+  const rad = Math.PI / 180;
+  trees.forEach(([lng, lat], i) => {
+    const kx = 111320 * Math.cos(lat * rad);
+    const cypress = i % 9 === 4;
+    const radius = cypress ? 0.9 + ((i * 5) % 4) * 0.12 : 1.25 + ((i * 13) % 7) * 0.2;
+    const height = cypress ? 9 + ((i * 3) % 5) : 5.2 + ((i * 7) % 6) * 0.85;
+    const v = cypress ? 2 : i % 4;
+    const tiers = cypress
+      ? [[0.8, 1.6, height * 0.4], [1, height * 0.4, height * 0.75], [0.55, height * 0.75, height]]
+      : [[0.74, 2.3, height * 0.44], [1, height * 0.44, height * 0.8], [0.62, height * 0.8, height]];
+    tiers.forEach(([scale, base, top], t) => {
+      const turn = ((i * 37 + t * 23) % 60) * rad;
+      const ox = t ? (((i * 11 + t * 7) % 9) / 9 - 0.5) * radius * 0.35 : 0;
+      const oy = t ? (((i * 17 + t * 5) % 9) / 9 - 0.5) * radius * 0.35 : 0;
+      const ring: number[][] = [];
+      for (let n = 0; n <= 6; n++) {
+        const a = turn + (n % 6) * 60 * rad;
+        ring.push([lng + (ox + Math.cos(a) * radius * scale) / kx, lat + (oy + Math.sin(a) * radius * scale) / 111320]);
+      }
+      features.push({ type: 'Feature', properties: { k: v * 3 + t, b: base, h: top }, geometry: { type: 'Polygon', coordinates: [ring] } });
+    });
+  });
+  return { type: 'FeatureCollection', features };
+}
+
+/** Street trees: a trunk under a layered crown. */
 export function installTrees(map: maplibregl.Map, trees: LngLat[]) {
   if (!trees.length || map.getSource('bs-trees')) return;
-  map.addSource('bs-trees', { type: 'geojson', data: squares(trees, 1.45) });
-  map.addSource('bs-trunks', { type: 'geojson', data: squares(trees, 0.35) });
+  map.addSource('bs-trees', { type: 'geojson', data: crowns(trees) });
+  map.addSource('bs-trunks', { type: 'geojson', data: squares(trees, 0.22) });
   const before = map.getLayer('duel') ? 'duel' : undefined;
   map.addLayer(
     {
@@ -212,8 +253,8 @@ export function installTrees(map: maplibregl.Map, trees: LngLat[]) {
       source: 'bs-trees',
       minzoom: 14.5,
       paint: {
-        'fill-extrusion-color': ['match', ['get', 'v'], 0, '#3f8a4c', 1, '#56a25a', 2, '#2f7446', '#7ab567'],
-        'fill-extrusion-base': 2.2,
+        'fill-extrusion-color': treeColours(false) as never,
+        'fill-extrusion-base': ['get', 'b'],
         'fill-extrusion-height': ['get', 'h'],
         'fill-extrusion-vertical-gradient': true,
       },
@@ -420,7 +461,7 @@ export function installLights(map: maplibregl.Map, streets: { kind: string; coor
 }
 
 const NIGHT_LAYERS = ['bs-lamp-pools', 'bs-lamp-heads', 'bs-bridge-lights', 'bs-car-beams', 'bs-car-lamps'];
-const SCENE_LAYERS = ['bs-cars', 'bs-car-tops', 'bs-buildings', 'bs-buildings-far', 'bs-roofs', 'bs-roofs-far', 'bs-centerline', 'bs-ground', 'bs-trees', 'bs-trunks'];
+const SCENE_LAYERS = ['bs-walker', 'bs-cars', 'bs-car-tops', 'bs-buildings', 'bs-buildings-far', 'bs-roofs', 'bs-roofs-far', 'bs-centerline', 'bs-ground', 'bs-trees', 'bs-trunks'];
 /** The base map's own building layers, which ours replace in 3D. */
 const STYLE_3D = ['building-3d'];
 const STYLE_FLAT = ['building'];
@@ -538,7 +579,7 @@ export function setSceneMode(map: maplibregl.Map, on: boolean, scores = false, n
   paint('bs-roofs-far', 'fill-extrusion-color', roofFlat(dark));
   paint('bs-ground', 'fill-extrusion-color', dark ? '#3b3026' : '#6f6a64');
   paint('bs-trunks', 'fill-extrusion-color', dark ? '#1c1612' : '#6b4a32');
-  paint('bs-trees', 'fill-extrusion-color', ['match', ['get', 'v'], ...(dark ? [0, '#142a22', 1, '#18301f', 2, '#10241d', '#1c3323'] : [0, '#3f8a4c', 1, '#56a25a', 2, '#2f7446', '#7ab567'])]);
+  paint('bs-trees', 'fill-extrusion-color', treeColours(dark));
   paint('bs-centerline', 'line-color', dark ? '#6b5a2a' : '#d8b648');
   paint('bs-relief', 'hillshade-highlight-color', dark ? '#1a2444' : '#fff6e0');
   paint('bs-relief', 'hillshade-shadow-color', dark ? '#04060d' : '#3b4a5a');

@@ -71,16 +71,6 @@ function svgMarker(lib: Maps3d, options: Record<string, unknown>, svg: string): 
   return marker;
 }
 
-/** The walker: a small figure in international orange, standing in a pool of light. */
-const WALKER_SVG =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="46" height="60" viewBox="0 0 46 60">' +
-  '<defs><radialGradient id="h"><stop offset="0" stop-color="#ffc86e" stop-opacity=".9"/><stop offset="1" stop-color="#ffc86e" stop-opacity="0"/></radialGradient></defs>' +
-  '<ellipse cx="23" cy="52" rx="21" ry="8" fill="url(#h)"/>' +
-  '<g fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round"><path d="M23 22 V36 M23 36 L17 50 M23 36 L30 50 M23 25 L15 34 M23 25 L31 33"/></g>' +
-  '<circle cx="23" cy="12" r="8.5" fill="#fff"/>' +
-  '<g fill="none" stroke="#e2542f" stroke-width="5" stroke-linecap="round"><path d="M23 22 V36 M23 36 L17 50 M23 36 L30 50 M23 25 L15 34 M23 25 L31 33"/></g>' +
-  '<circle cx="23" cy="12" r="6" fill="#ffd27a" stroke="#e2542f" stroke-width="1.5"/></svg>';
-
 /** A pickup waiting on the route. */
 const PICKUP_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">' +
@@ -153,7 +143,8 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
 
   useEffect(() => {
     let cancelled = false;
-    let walker: any = null;
+    let walker: any[] = [];
+    let walkerWarned = false;
     const fleet = new Map<number, any>();
     const pickups = new Map<string, any>();
     let fleetWarned = false;
@@ -197,17 +188,36 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
             return { look: [c.lng, c.lat], bearing: Number(map.heading) || 0, pitch: Number(map.tilt) || 0, zoom, lens };
           },
           apply: put,
-          walker(at) {
+          walker(at, heading = 0) {
             if (!at) {
-              walker?.remove();
-              walker = null;
+              for (const model of walker) model.remove();
+              walker = [];
               return;
             }
-            const position = { lat: at[1], lng: at[0], altitude: 1.5 };
-            if (!walker) {
-              walker = svgMarker(lib, { position, altitudeMode: 'RELATIVE_TO_GROUND' }, WALKER_SVG);
-              map.append(walker);
-            } else walker.position = position;
+            try {
+              // Four models, one for each moment of the stride; the one in step is shown and the
+              // rest wait out of sight below ground. Facing and footing can be tuned from the console.
+              const tune = (window as any).__bsWalkerTune ?? { heading: 180, tilt: 270, altitude: 0, mode: 'RELATIVE_TO_MESH' };
+              const step = Math.floor((performance.now() / 1000) * 1.7 * 4) % 4;
+              // Up close the figure is life size; from further off it grows so it can still be found.
+              const scale = Math.max(1.3, Math.min(9, (Number(map.range) || 60) / 26));
+              const orientation = { heading: (((heading + tune.heading) % 360) + 360) % 360, tilt: tune.tilt, roll: 0 };
+              if (!walker.length) {
+                for (let i = 0; i < 4; i++) {
+                  const model = new lib.Model3DElement({ src: `/models/walker-${i}.glb`, position: { lat: at[1], lng: at[0], altitude: -500 }, orientation, altitudeMode: tune.mode, scale });
+                  map.append(model);
+                  walker.push(model);
+                }
+              }
+              walker.forEach((model, i) => {
+                model.position = { lat: at[1], lng: at[0], altitude: i === step ? tune.altitude : -500 };
+                model.orientation = orientation;
+                model.scale = scale;
+              });
+            } catch (err) {
+              if (!walkerWarned) console.warn('[beautiful-streets] walker failed', err);
+              walkerWarned = true;
+            }
           },
           ground: (at) => altitudeRef.current(at),
           // The photographed city is a rough mesh up close, and street trees swallow a low camera,
@@ -359,7 +369,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
       });
     return () => {
       cancelled = true;
-      walker?.remove();
+      for (const model of walker) model.remove();
       for (const model of fleet.values()) model.remove();
       fleet.clear();
       for (const marker of pickups.values()) marker.remove();

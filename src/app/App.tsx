@@ -14,6 +14,7 @@ import { makeGround } from './ground';
 import { horizonY, skySpot, startSky, type SkyView } from './sky';
 import { Sound } from './sound';
 import { Traffic } from './traffic';
+import { sideLegs } from './walker';
 import WeatherLayer from './Weather';
 import { applySun, CAMERA_3D, drawVehicles, installLights, installScene, installTrees, setSceneMode, sunOnScreen, type Sun } from './scene';
 import type { LngLat, Route, RouteLeg, Side, WalkContext } from '@/lib/types';
@@ -166,6 +167,13 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
   const [board, setBoard] = useState<{ streets: { name: string; score: number; votes: number }[]; voters: { name: string; votes: number }[] } | null>(null);
 
   const byId = useMemo(() => new Map(blocks.map((b) => [b.id, b])), [blocks]);
+  /** The walk as walked: each stretch moved to the side of the street the plan chose. */
+  const legs = useMemo(
+    () => (plan ? sideLegs(plan.route.legs, (id) => byId.get(id)?.kind) : null),
+    // The street kinds do not change when votes reload the scores, so the plan alone decides.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [plan],
+  );
 
   const loadWorld = useCallback(async () => {
     try {
@@ -356,15 +364,13 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
   useEffect(() => {
     if (!mapReady) return;
     const map = mapRef.current!;
-    const legs = plan?.route.legs ?? [];
-    (map.getSource('route') as GeoJSONSource).setData(
-      lines(legs.map((l) => line(l.coords, { offset: l.side === 'R' ? 5 : -5 }))),
-    );
+    const drawn = legs ?? [];
+    (map.getSource('route') as GeoJSONSource).setData(lines(drawn.map((l) => line(l.coords, { offset: 0 }))));
     // The route would clash with the matchup colours, so it only shows on the Walk tab.
     const visibility = tab === 'walk' ? 'visible' : 'none';
     map.setLayoutProperty('route', 'visibility', visibility);
     map.setLayoutProperty('route-bed', 'visibility', visibility);
-    if (legs.length && tab === 'walk') {
+    if (drawn.length && tab === 'walk') {
       const view = overview();
       if (view) {
         if (threeD && !calm() && introFor.current !== plan) {
@@ -376,14 +382,13 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, plan, tab]);
+  }, [mapReady, legs, tab]);
 
   // In 3D, buildings hide stretches of the route line, so mark the walk with a
   // trail of small blocks that always draw on top.
   useEffect(() => {
     for (const c of crumbs.current) c.remove();
     crumbs.current = [];
-    const legs = plan?.route.legs;
     if (!mapReady || !legs?.length || !threeD || tab !== 'walk') return;
     let carry = 0;
     for (const leg of legs) {
@@ -411,7 +416,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
         carry = (carry + len) % 35;
       }
     }
-  }, [mapReady, plan, threeD, tab]);
+  }, [mapReady, legs, threeD, tab]);
 
   // Show a new plan, or a new tab, from the top.
   useEffect(() => {
@@ -672,7 +677,6 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
   /** The camera position that shows the whole walk. */
   const overview = useCallback((): { center: LngLat; zoom: number } | null => {
     const map = mapRef.current;
-    const legs = plan?.route.legs;
     if (!map || !legs?.length) return null;
     const bounds = new maplibregl.LngLatBounds();
     for (const l of legs) for (const c of l.coords) bounds.extend(c);
@@ -684,7 +688,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     const zoom = Math.min(fit(box.width, lngSpan), fit(box.height, latSpan), 17) + (threeD ? 0.25 : 0);
     const c = bounds.getCenter();
     return { center: [c.lng, c.lat], zoom };
-  }, [plan, threeD]);
+  }, [legs, threeD]);
 
   /** End the film and hand the map back. */
   const endFilm = useCallback(() => {
@@ -701,14 +705,14 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     flightRef.current?.dispose();
     sound.current?.unlock();
     setThreeD(true);
-    const flight = new Flight(real && realApi.current ? realApi.current.stage : mapStage(map), plan.route.legs, view, setFilm, calm());
+    const flight = new Flight(real && realApi.current ? realApi.current.stage : mapStage(map), legs ?? plan.route.legs, view, setFilm, calm());
     if (!flight.valid) {
       flight.dispose();
       return;
     }
     flightRef.current = flight;
     flight.play();
-  }, [plan, overview, real]);
+  }, [plan, legs, overview, real]);
 
   // After the last frame, hold briefly, then hand the map back.
   useEffect(() => {
@@ -786,14 +790,14 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
 
   /** Every change of street along the walk: where it is, which way it bends, and what comes next. */
   const turns = useMemo(() => {
-    const legs = plan?.route.legs ?? [];
+    const path = legs ?? [];
     const steps = plan?.route.steps ?? [];
     // The whole path with running distance, so headings can be measured a little
     // before and after each corner instead of between two neighbouring points.
     const pts: LngLat[] = [];
     const cum: number[] = [];
     const starts: number[] = [];
-    for (const leg of legs) {
+    for (const leg of path) {
       starts.push(cum.length ? cum[cum.length - 1] : 0);
       for (const c of leg.coords) {
         const prev = pts[pts.length - 1];
@@ -814,16 +818,16 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     const toDeg = (p: LngLat, q: LngLat) => (Math.atan2((q[0] - p[0]) * Math.cos((p[1] * Math.PI) / 180), q[1] - p[1]) * 180) / Math.PI;
     const out: { at: number; where: LngLat; angle: number; name: string }[] = [];
     if (pts.length < 2) return out;
-    for (let i = 1; i < legs.length; i++) {
-      if (legs[i].step === legs[i - 1].step) continue;
+    for (let i = 1; i < path.length; i++) {
+      if (path[i].step === path[i - 1].step) continue;
       const d = starts[i];
       const angle = ((toDeg(at(d + 4), at(d + 30)) - toDeg(at(d - 30), at(d - 4)) + 540) % 360) - 180;
       // The same street continuing, only on its other side, is not a turn.
-      if (steps[legs[i].step]?.name !== steps[legs[i - 1].step]?.name || Math.abs(angle) > 30)
-        out.push({ at: d, where: at(d), angle, name: steps[legs[i].step]?.name ?? '' });
+      if (steps[path[i].step]?.name !== steps[path[i - 1].step]?.name || Math.abs(angle) > 30)
+        out.push({ at: d, where: at(d), angle, name: steps[path[i].step]?.name ?? '' });
     }
     return out;
-  }, [plan]);
+  }, [plan, legs]);
 
   const nextTurn = film && film.phase === 'travel' ? turns.find((t) => t.at > film.metres + 4) ?? null : null;
   const turnWord = (angle: number) =>
@@ -831,7 +835,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
   const feetOrMiles = (m: number) => (m < 300 ? `${Math.max(10, Math.round((m * 3.28084) / 10) * 10)} ft` : `${miles(m)} mi`);
 
   // Gems wait at the best spots of the walk and are picked up as the walker passes.
-  const gems = useMemo(() => (plan ? routeGems(plan.route.legs, (id) => byId.get(id)) : []), [plan, byId]);
+  const gems = useMemo(() => (legs ? routeGems(legs, (id) => byId.get(id)) : []), [legs, byId]);
   const gemsGot = film ? gems.filter((g) => g.at <= film.metres + 3).length : 0;
   useEffect(() => {
     for (const m of gemMarkers.current) m.remove();
@@ -1045,7 +1049,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
           <Photoreal
             apiKey={gKey}
             start={start}
-            legs={plan?.route.legs ?? null}
+            legs={legs}
             altitude={ground}
             onReady={(api) => {
               realApi.current = api;

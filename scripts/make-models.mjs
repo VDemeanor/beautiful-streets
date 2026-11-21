@@ -148,6 +148,34 @@ export function ferry() {
   return buildGlb(boxes, materials);
 }
 
+/** The walker at one moment of the stride. Keep in step with pose() in src/app/walker.ts. */
+export function walker(phase) {
+  const materials = [paint([0.89, 0.33, 0.18], 0, 0.7), paint([0.14, 0.17, 0.27], 0, 0.8), paint([0.9, 0.69, 0.54], 0, 0.7), paint([0.23, 0.16, 0.11], 0, 0.8), paint([0.96, 0.95, 0.93], 0, 0.6), paint([0.12, 0.34, 0.45], 0, 0.7)];
+  const [JACKET, TROUSERS, SKIN, HAIR, SHOE, PACK] = [0, 1, 2, 3, 4, 5];
+  const s = Math.sin(phase);
+  const c = Math.cos(phase);
+  const bob = 0.03 * Math.abs(c);
+  const parts = [];
+  const part = (x, z, w, d, y0, y1, mat) => parts.push({ min: [x - w / 2, y0, z - d / 2], max: [x + w / 2, y1, z + d / 2], mat });
+  for (const side of [-1, 1]) {
+    const swing = s * side;
+    const lift = Math.max(0, c * side) * 0.11;
+    part(0.11 * side, 0.3 * swing + 0.05, 0.17, 0.3, lift, lift + 0.09, SHOE);
+    part(0.11 * side, 0.3 * swing, 0.17, 0.19, lift + 0.09, 0.5 + bob, TROUSERS);
+    part(0.11 * side, 0.14 * swing, 0.18, 0.21, 0.5 + bob, 0.9 + bob, TROUSERS);
+    part(0.28 * side, -0.09 * swing, 0.11, 0.14, 1.12 + bob, 1.46 + bob, JACKET);
+    part(0.28 * side, -0.24 * swing, 0.1, 0.13, 0.86 + bob, 1.12 + bob, JACKET);
+    part(0.28 * side, -0.27 * swing, 0.09, 0.11, 0.77 + bob, 0.86 + bob, SKIN);
+  }
+  part(0, 0.02, 0.44, 0.26, 0.9 + bob, 1.48 + bob, JACKET);
+  part(0, -0.19, 0.3, 0.13, 1.02 + bob, 1.42 + bob, PACK);
+  part(0, 0.02, 0.13, 0.13, 1.48 + bob, 1.54 + bob, SKIN);
+  part(0, 0.03, 0.21, 0.22, 1.54 + bob, 1.74 + bob, SKIN);
+  part(0, 0, 0.23, 0.24, 1.72 + bob, 1.8 + bob, HAIR);
+  part(0, -0.09, 0.23, 0.07, 1.58 + bob, 1.74 + bob, HAIR);
+  return buildGlb(parts, materials);
+}
+
 /** Car colours in roughly the proportions seen on the street. */
 export const CAR_PAINTS = [
   [0.93, 0.93, 0.92], // white
@@ -163,5 +191,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   CAR_PAINTS.forEach((c, i) => writeFileSync(`public/models/car-${i}.glb`, car(c)));
   writeFileSync('public/models/cable-car.glb', cableCar());
   writeFileSync('public/models/ferry.glb', ferry());
+  for (let i = 0; i < 4; i++) writeFileSync(`public/models/walker-${i}.glb`, walker((i * Math.PI) / 2));
   console.log(`Wrote ${CAR_PAINTS.length} cars, a cable car and a ferry to public/models.`);
 }

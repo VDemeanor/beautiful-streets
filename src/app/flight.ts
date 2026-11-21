@@ -2,6 +2,7 @@ import * as maplibregl from 'maplibre-gl';
 import { bearing as bearingBetween, haversine } from '@/lib/geo';
 import type { LngLat, RouteLeg } from '@/lib/types';
 import { CAMERA_3D } from './scene';
+import { drawWalker } from './walker';
 
 /**
  * The film of a walk. A flight has three acts:
@@ -53,8 +54,8 @@ export interface Stage {
   current(): Shot;
   /** Point the camera. */
   apply(shot: Shot): void;
-  /** Move the glowing walker, or remove it with null. */
-  walker(at: LngLat | null): void;
+  /** Move the walker and face them along a compass heading, or remove them with null. */
+  walker(at: LngLat | null, heading?: number): void;
   /** Ground height in metres, if the stage can tell; used to keep the camera above hills. */
   ground?(at: LngLat): number;
   /** Height of the picture in CSS pixels. */
@@ -88,24 +89,23 @@ export function mapStage(map: maplibregl.Map): Stage {
       map.setVerticalFieldOfView?.(s.lens);
       map.jumpTo({ center: s.look, bearing: s.bearing, pitch: s.pitch, zoom: s.zoom });
     },
-    walker(at) {
+    walker(at, heading = 0) {
       if (!at) {
         orb?.remove();
         orb = null;
+        drawWalker(map, null);
         return;
       }
+      // Up close the figure is life size; from further off it grows so it can still be found.
+      const c = map.getCenter();
+      const distance = cameraDistance({ look: [c.lng, c.lat], bearing: 0, pitch: 0, zoom: map.getZoom(), lens: map.getVerticalFieldOfView?.() ?? NORMAL_LENS }, map.getContainer().getBoundingClientRect().height);
+      drawWalker(map, at, heading, clamp(distance / 26, 1.15, 9), (performance.now() / 1000) * 2 * Math.PI * 1.7);
       if (!orb) {
+        // A pool of light at their feet.
         const el = document.createElement('div');
         el.className = 'walker';
-        // A small walking figure standing in a pool of light.
-        el.innerHTML =
-          '<span class="walker-glow"></span>' +
-          '<svg class="walker-figure" width="30" height="44" viewBox="0 0 30 44" aria-hidden="true">' +
-          '<path class="limb leg a" d="M15 26 L15 40"/><path class="limb leg b" d="M15 26 L15 40"/>' +
-          '<path class="limb arm a" d="M15 16 L15 27"/><path class="limb arm b" d="M15 16 L15 27"/>' +
-          '<path class="limb" d="M15 15 V26"/><circle cx="15" cy="8" r="5"/></svg>' +
-          Array.from({ length: 5 }, (_, i) => `<i class="spark" style="--i:${i}"></i>`).join('');
-        orb = new maplibregl.Marker({ element: el, anchor: 'bottom', opacityWhenCovered: '1' }).setLngLat(at).addTo(map);
+        el.innerHTML = '<span class="walker-glow"></span>' + Array.from({ length: 4 }, (_, i) => `<i class="spark" style="--i:${i}"></i>`).join('');
+        orb = new maplibregl.Marker({ element: el, opacityWhenCovered: '1' }).setLngLat(at).addTo(map);
       } else orb.setLngLat(at);
     },
     ground: (at) => map.queryTerrainElevation(at) ?? 0,
@@ -141,6 +141,7 @@ export class Flight {
   private pitchLimit: number | null = null;
   private lastTrail = 0;
   private travelMs = 0;
+  private faced = 0;
   private from: Shot;
   private state: FlightState;
   private introMs: number;
@@ -166,7 +167,8 @@ export class Flight {
     this.introMs = calm ? 0 : 7200;
     this.finaleMs = calm ? 0 : 8600;
     this.from = stage.current();
-    stage.walker(this.at(0));
+    this.faced = this.total > 3 ? bearingBetween(this.at(0), this.at(3)) : 0;
+    stage.walker(this.at(0), this.faced);
 
     this.state = { playing: false, phase: this.introMs ? 'intro' : 'travel', progress: 0, metres: 0, total: this.total, leg: 0, cuts: 0, rig: 'director', speed: 1 };
   }
@@ -200,6 +202,16 @@ export class Flight {
     const c = this.at(clamp(d + 22, 0, this.total));
     if ((a[0] === b[0] && a[1] === b[1]) || (b[0] === c[0] && b[1] === c[1])) return 0;
     return Math.abs((((bearingBetween(b, c) - bearingBetween(a, b) + 540) % 360) - 180));
+  }
+
+  /** Which way the walker faces: the direction of the path right under their feet. */
+  private facing(d: number): number {
+    const a = this.at(clamp(d - 1.5, 0, this.total));
+    const b = this.at(clamp(d + 1.5, 0, this.total));
+    const want = a[0] === b[0] && a[1] === b[1] ? this.faced : bearingBetween(a, b);
+    // Turn through corners rather than snapping round.
+    this.faced = turn(this.faced, want, 0.25);
+    return this.faced;
   }
 
   /** Direction of travel, looking a little ahead so corners are anticipated. */
@@ -364,7 +376,7 @@ export class Flight {
         };
       }
       this.apply(this.cam);
-      this.stage.walker(this.at(this.d));
+      this.stage.walker(this.at(this.d), this.facing(this.d));
       const progress = this.d / this.total;
       if (this.d >= this.total) {
         this.phaseMs = 0;
@@ -438,7 +450,7 @@ export class Flight {
       const rig = this.state.rig === 'director' ? SEQUENCE[index % SEQUENCE.length] : this.state.rig;
       this.cam = this.shot(rig, this.d, (this.d % SHOT_METRES) / SHOT_METRES, index % 2 === 1);
       this.apply(this.cam);
-      this.stage.walker(this.at(this.d));
+      this.stage.walker(this.at(this.d), this.facing(this.d));
     }
   }
 
