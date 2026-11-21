@@ -310,6 +310,13 @@ input[type='text'], input[type='datetime-local'] {
 .shell.filming .sheet { display: none; }
 
 
+/* The real city is photographed in daylight, so it keeps the daytime grade whatever the hour. */
+.map.real.night .grade, .map.real.golden .grade {
+  background:
+    radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(12, 22, 40, 0.38) 100%),
+    linear-gradient(to bottom, rgba(70, 140, 220, 0.08), rgba(255, 190, 120, 0.1));
+  mix-blend-mode: soft-light;
+}
 /* The photoreal city sits over the drawn one; the film overlays stay on top of both. */
 .photoreal { position: absolute; inset: 0; z-index: 1; background: #0b1220; }
 .map.real .birds, .map.real .sun, .map.real .maplibregl-ctrl-top-right, .map.real .maplibregl-ctrl-bottom-right { display: none; }

@@ -72,6 +72,10 @@ const ORB_SVG =
   '<radialGradient id="h"><stop offset="0" stop-color="#ffc86e" stop-opacity=".85"/><stop offset="1" stop-color="#ffc86e" stop-opacity="0"/></radialGradient></defs>' +
   '<circle cx="22" cy="22" r="21" fill="url(#h)"/><circle cx="22" cy="22" r="9" fill="url(#g)" stroke="#fff" stroke-width="2.5"/></svg>';
 
+const TURN_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30">' +
+  '<circle cx="15" cy="15" r="11" fill="#ffb23e" stroke="#fff" stroke-width="3"/><circle cx="15" cy="15" r="4" fill="#fff"/></svg>';
+
 const GEM_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="46" height="46" viewBox="0 0 46 46">' +
   '<defs><linearGradient id="d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffe9a8"/><stop offset=".4" stop-color="#ffb23e"/><stop offset=".75" stop-color="#e2542f"/><stop offset="1" stop-color="#8f1f1a"/></linearGradient></defs>' +
@@ -190,7 +194,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
           height,
           reveal(path) {
             try {
-              if (baseRef.current && path.length > 1) baseRef.current.coordinates = toCoords(path);
+              if (baseRef.current && path.length > 1) baseRef.current.path = toCoords(path);
             } catch (err) {
               console.warn('[beautiful-streets] reveal failed', err);
             }
@@ -204,7 +208,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
               }
               if (!walkedRef.current) {
                 walkedRef.current = new lib.Polyline3DElement({
-                  coordinates: toCoords(path),
+                  path: toCoords(path),
                   altitudeMode: 'CLAMP_TO_GROUND',
                   drawsOccludedSegments: true,
                   strokeColor: '#ff6a3d',
@@ -213,7 +217,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
                   outerWidth: 0.3,
                 });
                 map.append(walkedRef.current);
-              } else walkedRef.current.coordinates = toCoords(path);
+              } else walkedRef.current.path = toCoords(path);
             } catch (err) {
               console.warn('[beautiful-streets] trail failed', err);
             }
@@ -255,7 +259,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
               }
               const position = { lat: at[1], lng: at[0], altitude: 16 };
               if (!turnRef.current) {
-                turnRef.current = new lib.Marker3DElement({ position, altitudeMode: 'RELATIVE_TO_GROUND', extruded: true, label: label ?? '' });
+                turnRef.current = svgMarker(lib, { position, altitudeMode: 'RELATIVE_TO_GROUND', extruded: true, label: label ?? '' }, TURN_SVG);
                 map.append(turnRef.current);
               } else {
                 turnRef.current.position = position;
@@ -313,10 +317,10 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
     if (legs?.length) {
       const path: LngLat[] = legs.flatMap((l) => l.coords);
       attempt('the route', () => {
-        baseRef.current = line({ coordinates: toCoords(path), strokeColor: '#ffffff', outerColor: '#1b2a2f', strokeWidth: 8, outerWidth: 0.3 });
+        baseRef.current = line({ path: toCoords(path), strokeColor: '#ffffff', outerColor: '#1b2a2f', strokeWidth: 8, outerWidth: 0.3 });
       });
       attempt('the direction arrows', () => {
-        for (const arrow of chevrons(path, 55)) line({ coordinates: toCoords(arrow), strokeColor: '#1b2a2f', strokeWidth: 4 });
+        for (const arrow of chevrons(path, 55)) line({ path: toCoords(arrow), strokeColor: '#1b2a2f', strokeWidth: 4 });
       });
     }
     walkedRef.current?.remove();

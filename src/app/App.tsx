@@ -547,22 +547,39 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
   const turns = useMemo(() => {
     const legs = plan?.route.legs ?? [];
     const steps = plan?.route.steps ?? [];
-    const out: { at: number; where: LngLat; angle: number; name: string }[] = [];
-    let metres = 0;
-    for (let i = 0; i < legs.length; i++) {
-      if (i > 0 && legs[i].step !== legs[i - 1].step) {
-        const before = legs[i - 1].coords;
-        const after = legs[i].coords;
-        const a = before[Math.max(0, before.length - 2)];
-        const b = before[before.length - 1];
-        const c = after[Math.min(1, after.length - 1)];
-        const toDeg = (p: LngLat, q: LngLat) => (Math.atan2((q[0] - p[0]) * Math.cos((p[1] * Math.PI) / 180), q[1] - p[1]) * 180) / Math.PI;
-        const angle = ((toDeg(b, c) - toDeg(a, b) + 540) % 360) - 180;
-        // The same street continuing, only on its other side, is not a turn.
-        if (steps[legs[i].step]?.name !== steps[legs[i - 1].step]?.name || Math.abs(angle) > 30) out.push({ at: metres, where: b, angle, name: steps[legs[i].step]?.name ?? '' });
+    // The whole path with running distance, so headings can be measured a little
+    // before and after each corner instead of between two neighbouring points.
+    const pts: LngLat[] = [];
+    const cum: number[] = [];
+    const starts: number[] = [];
+    for (const leg of legs) {
+      starts.push(cum.length ? cum[cum.length - 1] : 0);
+      for (const c of leg.coords) {
+        const prev = pts[pts.length - 1];
+        if (prev && prev[0] === c[0] && prev[1] === c[1]) continue;
+        cum.push(prev ? cum[cum.length - 1] + haversine(prev, c) : 0);
+        pts.push(c);
       }
-      // Measured the same way the film measures it, so the countdown reaches zero at the corner.
-      for (let k = 1; k < legs[i].coords.length; k++) metres += haversine(legs[i].coords[k - 1], legs[i].coords[k]);
+    }
+    const total = cum[cum.length - 1] ?? 0;
+    const at = (d: number): LngLat => {
+      const x = Math.max(0, Math.min(total, d));
+      let i = 1;
+      while (i < cum.length - 1 && cum[i] < x) i++;
+      const span = cum[i] - cum[i - 1];
+      const f = span ? (x - cum[i - 1]) / span : 0;
+      return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f];
+    };
+    const toDeg = (p: LngLat, q: LngLat) => (Math.atan2((q[0] - p[0]) * Math.cos((p[1] * Math.PI) / 180), q[1] - p[1]) * 180) / Math.PI;
+    const out: { at: number; where: LngLat; angle: number; name: string }[] = [];
+    if (pts.length < 2) return out;
+    for (let i = 1; i < legs.length; i++) {
+      if (legs[i].step === legs[i - 1].step) continue;
+      const d = starts[i];
+      const angle = ((toDeg(at(d + 4), at(d + 30)) - toDeg(at(d - 30), at(d - 4)) + 540) % 360) - 180;
+      // The same street continuing, only on its other side, is not a turn.
+      if (steps[legs[i].step]?.name !== steps[legs[i - 1].step]?.name || Math.abs(angle) > 30)
+        out.push({ at: d, where: at(d), angle, name: steps[legs[i].step]?.name ?? '' });
     }
     return out;
   }, [plan]);
