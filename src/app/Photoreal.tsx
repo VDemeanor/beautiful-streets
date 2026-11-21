@@ -145,6 +145,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
     let cancelled = false;
     let walker: any[] = [];
     let walkerWarned = false;
+    let steady = true;
     const fleet = new Map<number, any>();
     const pickups = new Map<string, any>();
     let fleetWarned = false;
@@ -165,6 +166,9 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
         map.style.height = '100%';
         host.current.appendChild(map);
         mapRef.current = map;
+        map.addEventListener('gmp-steadychange', (event: any) => {
+          steady = event.isSteady !== false;
+        });
 
         const height = () => host.current?.getBoundingClientRect().height ?? 600;
         const put = (s: Shot) => {
@@ -223,6 +227,10 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
           // The photographed city is a rough mesh up close, and street trees swallow a low camera,
           // so here the street shot stays just above the treetops.
           street: { distance: 70, pitch: 67 },
+          // Google sends a rough city first and the detail a moment later, so the film travels
+          // slower here and waits while detail is still arriving.
+          pace: 0.42,
+          busy: () => !steady,
           height,
           reveal(path) {
             try {

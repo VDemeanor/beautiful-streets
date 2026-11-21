@@ -520,6 +520,21 @@ export function createEngine(host: HTMLElement, options: Options): CinemaApi {
     ground,
     // Close enough to feel like being in the street, high enough to clear the street trees.
     street: { distance: 46, pitch: 74 },
+    pace: 0.42,
+    busy: () => tiles.loadProgress < 0.97,
+    sees(s) {
+      // Look from the walker back toward where the camera would be: anything nearer than the camera is in the way.
+      const target = local(s.look, ground(s.look) + 1.6);
+      const d = cameraDistance(s, height());
+      const b = s.bearing * RAD;
+      const p = clamp(s.pitch, 0, 88) * RAD;
+      const toCamera = new THREE.Vector3(Math.sin(b) * Math.sin(p), Math.cos(p), -Math.cos(b) * Math.sin(p));
+      raycaster.set(target.addScaledVector(toCamera, 3), toCamera);
+      raycaster.far = d - 3;
+      const blocked = raycaster.intersectObject(tiles.group, true).length > 0;
+      raycaster.far = Infinity;
+      return !blocked;
+    },
     height,
     settle() {
       view = { ...view, lens: NORMAL_LENS };

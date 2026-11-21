@@ -64,6 +64,12 @@ export interface Stage {
   settle(): void;
   /** How close the street camera can usefully get: metres from the walker, and its tilt. */
   street?: { distance: number; pitch: number };
+  /** How fast the film may travel here, as a share of the normal pace. The real city needs time to load in. */
+  pace?: number;
+  /** True while the stage is still loading detail for the current view; the film slows to wait for it. */
+  busy?(): boolean;
+  /** Whether the camera can see what it is looking at from this shot, or something is in the way. */
+  sees?(shot: Shot): boolean;
   /** Show this much of the planned path (drawn on during the opening shot). */
   reveal?(path: LngLat[]): void;
   /** The part already walked, drawn brighter over the plan. */
@@ -142,6 +148,9 @@ export class Flight {
   private lastTrail = 0;
   private travelMs = 0;
   private faced = 0;
+  private frames = 0;
+  private sight = 90;
+  private flow = 1;
   private from: Shot;
   private state: FlightState;
   private introMs: number;
@@ -233,12 +242,13 @@ export class Flight {
       }
       case 'side': {
         const look = this.at(d);
-        return { look, bearing: h + (flip ? -82 : 82), pitch: this.stage.street ? 68 : 74, zoom: this.zoomFor((this.stage.street ? 85 : 62) - 8 * t, 52, look), lens: 52 };
+        return { look, bearing: h + (flip ? -82 : 82), pitch: this.stage.street ? 60 : 74, zoom: this.zoomFor((this.stage.street ? 95 : 62) - 8 * t, 52, look), lens: 52 };
       }
       case 'drone':
         return { look: this.at(d + 45), bearing: h - 28 + 56 * t, pitch: 56, zoom: 16.45, lens: 40 };
       case 'orbit':
-        return { look: this.at(d), bearing: h + 40 + 220 * t, pitch: 72, zoom: 17.1, lens: 50 };
+        // Among real buildings a low circling camera keeps losing the walker behind them, so it rides higher.
+        return { look: this.at(d), bearing: h + 40 + 220 * t, pitch: this.stage.street ? 58 : 72, zoom: 17.1, lens: 50 };
     }
   }
 
@@ -277,9 +287,21 @@ export class Flight {
     }
   }
 
+  /** The steepest tilt from which the walker is not hidden behind a building or a tree. */
+  private clearPitch(s: Shot, from: number): number {
+    if (!this.stage.sees) return from;
+    // Looking is costly, so the answer is refreshed a few times a second.
+    if (this.frames++ % 5 === 0) {
+      let pitch = from;
+      while (pitch > 38 && !this.stage.sees({ ...s, pitch })) pitch -= 6;
+      this.sight = pitch;
+    }
+    return Math.min(from, this.sight);
+  }
+
   private apply(s: Shot) {
     // Ease toward the safe tilt so the correction itself is not a jolt.
-    const safe = this.safePitch(s);
+    const safe = this.clearPitch(s, this.safePitch(s));
     this.pitchLimit = this.pitchLimit === null ? safe : lerp(this.pitchLimit, safe, 0.12);
     this.stage.apply({ ...s, pitch: Math.min(s.pitch, this.pitchLimit) });
   }
@@ -349,7 +371,9 @@ export class Flight {
       // Close to the ground the same speed looks far faster, so street-level shots slow down.
       const shooting = s.rig === 'director' ? SEQUENCE[Math.floor(this.d / SHOT_METRES) % SEQUENCE.length] : s.rig;
       const near = shooting === 'chase' ? 0.5 : shooting === 'side' ? 0.72 : 1;
-      this.d = Math.min(this.total, this.d + (dt / 1000) * 42 * s.speed * away * corner * arrive * near);
+      // Where the city is still loading in, ease right down and let it catch up.
+      this.flow = lerp(this.flow, this.stage.busy?.() ? 0.3 : 1, 0.04);
+      this.d = Math.min(this.total, this.d + (dt / 1000) * 42 * s.speed * away * corner * arrive * near * (this.stage.pace ?? 1) * this.flow);
       if (now - this.lastTrail > 110) {
         this.lastTrail = now;
         this.stage.trail?.(this.upTo(this.d));
