@@ -95,10 +95,15 @@ export function mapStage(map: maplibregl.Map): Stage {
       if (!orb) {
         const el = document.createElement('div');
         el.className = 'walker';
+        // A small walking figure standing in a pool of light.
         el.innerHTML =
-          '<span class="walker-glow"></span><span class="walker-core"></span>' +
+          '<span class="walker-glow"></span>' +
+          '<svg class="walker-figure" width="30" height="44" viewBox="0 0 30 44" aria-hidden="true">' +
+          '<path class="limb leg a" d="M15 26 L15 40"/><path class="limb leg b" d="M15 26 L15 40"/>' +
+          '<path class="limb arm a" d="M15 16 L15 27"/><path class="limb arm b" d="M15 16 L15 27"/>' +
+          '<path class="limb" d="M15 15 V26"/><circle cx="15" cy="8" r="5"/></svg>' +
           Array.from({ length: 5 }, (_, i) => `<i class="spark" style="--i:${i}"></i>`).join('');
-        orb = new maplibregl.Marker({ element: el, opacityWhenCovered: '1' }).setLngLat(at).addTo(map);
+        orb = new maplibregl.Marker({ element: el, anchor: 'bottom', opacityWhenCovered: '1' }).setLngLat(at).addTo(map);
       } else orb.setLngLat(at);
     },
     ground: (at) => map.queryTerrainElevation(at) ?? 0,
@@ -206,15 +211,27 @@ export class Flight {
   private shot(rig: Exclude<Rig, 'director'>, d: number, t: number, flip: boolean): Shot {
     const h = this.heading(d);
     switch (rig) {
-      case 'chase':
-        return { look: this.at(d + 18), bearing: h, pitch: 78, zoom: 17.35, lens: 54 };
-      case 'side':
-        return { look: this.at(d), bearing: h + (flip ? -82 : 82), pitch: 71, zoom: 17.15 + 0.25 * t, lens: 50 };
+      case 'chase': {
+        // Down in the street: a few metres above the pavement, a short way behind the walker.
+        const look = this.at(d + 9);
+        return { look, bearing: h, pitch: 79, zoom: this.zoomFor(30, 58, look), lens: 58 };
+      }
+      case 'side': {
+        const look = this.at(d);
+        return { look, bearing: h + (flip ? -82 : 82), pitch: 74, zoom: this.zoomFor(62 - 8 * t, 52, look), lens: 52 };
+      }
       case 'drone':
         return { look: this.at(d + 45), bearing: h - 28 + 56 * t, pitch: 56, zoom: 16.45, lens: 40 };
       case 'orbit':
         return { look: this.at(d), bearing: h + 40 + 220 * t, pitch: 72, zoom: 17.1, lens: 50 };
     }
+  }
+
+  /** The zoom that puts the camera this many metres from what it looks at. */
+  private zoomFor(metres: number, lens: number, at: LngLat): number {
+    const rad = Math.PI / 180;
+    const f = this.stage.height() / 2 / Math.tan((lens * rad) / 2);
+    return Math.log2((78271.5 * Math.cos(at[1] * rad) * f) / metres);
   }
 
   /**
@@ -236,7 +253,8 @@ export class Flight {
           s.look[0] + (back * Math.sin(b)) / (111320 * Math.cos(s.look[1] * rad)),
           s.look[1] + (back * Math.cos(b)) / 111320,
         ];
-        if (lookGround + up > ground(cam) + 14) return pitch;
+        // A close camera only needs to clear the pavement; a distant one needs to clear rooftops.
+        if (lookGround + up > ground(cam) + clamp(distance * 0.1, 2.5, 14)) return pitch;
       }
       return 45;
     } catch {
@@ -313,7 +331,10 @@ export class Flight {
       const away = Math.min(1, 0.25 + this.travelMs / 2600);
       const corner = 1 - 0.45 * Math.min(1, this.bend(this.d) / 70);
       const arrive = Math.min(1, 0.3 + (this.total - this.d) / 60);
-      this.d = Math.min(this.total, this.d + (dt / 1000) * 42 * s.speed * away * corner * arrive);
+      // Close to the ground the same speed looks far faster, so street-level shots slow down.
+      const shooting = s.rig === 'director' ? SEQUENCE[Math.floor(this.d / SHOT_METRES) % SEQUENCE.length] : s.rig;
+      const near = shooting === 'chase' ? 0.5 : shooting === 'side' ? 0.72 : 1;
+      this.d = Math.min(this.total, this.d + (dt / 1000) * 42 * s.speed * away * corner * arrive * near);
       if (now - this.lastTrail > 110) {
         this.lastTrail = now;
         this.stage.trail?.(this.upTo(this.d));

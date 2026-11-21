@@ -23,6 +23,8 @@ export async function GET() {
         score: r2(finalScore(b, DEFAULT_WEIGHTS, c)),
         votes: Math.round(communityScore(c)?.n ?? 0),
         dims: [r2(b.prior.views), r2(b.prior.green), r2(b.prior.arch), r2(b.prior.energy)],
+        elev: b.elev == null ? null : Math.round(b.elev * 10) / 10,
+        grade: Math.round(b.grade * 1000) / 1000,
       };
     });
     return Response.json({ blocks, me, source: w.source });

@@ -180,17 +180,26 @@ input[type='text'], input[type='datetime-local'] {
 @keyframes pop { from { transform: scale(0) rotate(90deg); opacity: 0; } to { transform: scale(1) rotate(0); opacity: 1; } }
 @keyframes shimmer { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.55); } }
 
-/* You, during the fly-through. */
-.walker { position: relative; width: 26px; height: 26px; pointer-events: none; }
-.walker-core {
-  position: absolute; inset: 5px; border-radius: 50%; border: 2px solid #fff;
-  background: radial-gradient(circle at 35% 30%, #fff, #ffd27a 35%, #e2542f 80%);
-}
+/* You, during the fly-through: a small figure walking in a pool of light. */
+.walker { position: relative; width: 30px; height: 44px; pointer-events: none; }
 .walker-glow {
-  position: absolute; inset: -10px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 200, 110, 0.75), rgba(255, 200, 110, 0) 68%);
+  position: absolute; left: 50%; bottom: -9px; width: 50px; height: 22px; margin-left: -25px; border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(255, 200, 110, 0.9), rgba(255, 200, 110, 0) 70%);
   animation: glow 1.3s ease-in-out infinite;
 }
+.walker-figure {
+  position: absolute; inset: 0; overflow: visible;
+  filter: drop-shadow(0 0 1.2px #fff) drop-shadow(0 0 1.2px #fff) drop-shadow(0 2px 3px rgba(0, 0, 0, 0.55));
+  animation: bob 0.43s ease-in-out infinite alternate;
+}
+.walker-figure .limb { fill: none; stroke: #e2542f; stroke-width: 4.6; stroke-linecap: round; }
+.walker-figure circle { fill: #ffd27a; stroke: #e2542f; stroke-width: 1.6; }
+.walker-figure .leg { transform-origin: 15px 26px; animation: stride 0.86s ease-in-out infinite; }
+.walker-figure .arm { transform-origin: 15px 16px; animation: stride 0.86s ease-in-out infinite reverse; stroke-width: 3.6; }
+.walker-figure .b { animation-delay: -0.43s; }
+.walker .spark { top: 16px; }
+@keyframes stride { 0%, 100% { transform: rotate(-26deg); } 50% { transform: rotate(26deg); } }
+@keyframes bob { from { transform: translateY(0); } to { transform: translateY(-1.5px); } }
 @keyframes glow { 0%, 100% { transform: scale(0.8); opacity: 0.7; } 50% { transform: scale(1.25); opacity: 1; } }
 
 /* The sun, placed where it really is in the sky. */
@@ -251,9 +260,31 @@ input[type='text'], input[type='datetime-local'] {
     linear-gradient(to bottom, rgba(255, 150, 90, 0.34), rgba(255, 120, 60, 0.28));
 }
 .map.golden.scene .map-canvas { filter: saturate(1.12) contrast(1.08) sepia(0.12); }
+/* The night scene is painted dark already, so the grade only closes in the corners. */
 .map.night .grade {
-  background: radial-gradient(ellipse at 50% 45%, rgba(40, 60, 140, 0.25) 30%, rgba(4, 8, 30, 0.7) 100%);
+  background: radial-gradient(ellipse at 50% 45%, transparent 42%, rgba(4, 8, 30, 0.6) 100%);
   mix-blend-mode: multiply;
+}
+.map.night.scene .map-canvas { filter: contrast(1.08) saturate(1.1); }
+
+/* Stars over the night sky, down to just above the horizon, and the moon where it really is. */
+.stars {
+  position: absolute; left: 0; right: 0; top: 0; z-index: 2; pointer-events: none;
+  background-image:
+    radial-gradient(1.4px 1.4px at 24px 31px, #fff, transparent), radial-gradient(1px 1px at 97px 12px, #dfe8ff, transparent),
+    radial-gradient(1.2px 1.2px at 61px 88px, #fff, transparent), radial-gradient(0.9px 0.9px at 140px 54px, #ffeccc, transparent),
+    radial-gradient(1.6px 1.6px at 33px 120px, #fff, transparent), radial-gradient(0.9px 0.9px at 180px 96px, #cfdcff, transparent),
+    radial-gradient(1.1px 1.1px at 118px 151px, #fff, transparent), radial-gradient(0.8px 0.8px at 72px 44px, #fff, transparent);
+  background-size: 211px 173px, 263px 197px, 181px 229px, 307px 241px, 349px 283px, 233px 311px, 277px 193px, 157px 139px;
+  -webkit-mask: linear-gradient(to bottom, #000 0 45%, transparent 92%);
+  mask: linear-gradient(to bottom, #000 0 45%, transparent 92%);
+  animation: starlight 5s ease-in-out infinite alternate;
+}
+@keyframes starlight { from { filter: brightness(0.8); } to { filter: brightness(1.25); } }
+.moon {
+  position: absolute; z-index: 2; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle at 36% 34%, #fffdf2 0 30%, #e9e6d8 62%, #cfcdbf 100%);
+  box-shadow: 0 0 26px 8px rgba(214, 226, 255, 0.45), 0 0 90px 40px rgba(170, 190, 255, 0.18);
 }
 
 /* Letterbox bars while the film plays. */
@@ -311,15 +342,20 @@ input[type='text'], input[type='datetime-local'] {
 
 
 /* The real city is photographed in daylight, so it keeps the daytime grade whatever the hour. */
-.map.real.night .grade, .map.real.golden .grade {
+.map.real.golden .grade {
   background:
     radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(12, 22, 40, 0.38) 100%),
     linear-gradient(to bottom, rgba(70, 140, 220, 0.08), rgba(255, 190, 120, 0.1));
   mix-blend-mode: soft-light;
 }
+/* The photographs cannot be relit, so night there is a deep blue dusk laid over daylight. */
+.map.real.night .grade {
+  background: linear-gradient(to bottom, rgba(14, 24, 70, 0.8), rgba(26, 32, 84, 0.66) 55%, rgba(58, 40, 76, 0.58));
+  mix-blend-mode: multiply;
+}
 /* The photoreal city sits over the drawn one; the film overlays stay on top of both. */
 .photoreal { position: absolute; inset: 0; z-index: 1; background: #0b1220; }
-.map.real .birds, .map.real .sun, .map.real .maplibregl-ctrl-top-right, .map.real .maplibregl-ctrl-bottom-right { display: none; }
+.map.real .sun, .map.real .maplibregl-ctrl-top-right, .map.real .maplibregl-ctrl-bottom-right { display: none; }
 /* Google's logo and credits must stay visible, so the controls sit above them here. */
 .map.real .dock { bottom: 40px; }
 .key-card { z-index: 6; }
@@ -394,3 +430,57 @@ input[type='text'], input[type='datetime-local'] {
 .wx-wet { position: absolute; inset: 0; z-index: 1; pointer-events: none; background: rgba(40, 60, 84, 0.22); }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } .spark { display: none; } }
+
+
+/* ---------- The game ---------- */
+
+/* A gem waiting on the route. Its colour says what it marks. */
+.gem { --g1: #eaffff; --g2: #58d6e8; --g3: #1f5673; position: relative; width: 22px; height: 28px; pointer-events: auto;
+  filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.85)) drop-shadow(0 3px 4px rgba(0, 0, 0, 0.45)); animation: hover 1.6s ease-in-out infinite alternate; }
+.gem::before {
+  content: ''; position: absolute; inset: 0; clip-path: polygon(50% 0, 100% 36%, 50% 100%, 0 36%);
+  background: linear-gradient(135deg, var(--g1) 0 22%, var(--g2) 48%, var(--g3) 100%);
+}
+.gem::after {
+  content: ''; position: absolute; inset: 0; clip-path: polygon(50% 0, 68% 36%, 50% 100%, 32% 36%);
+  background: rgba(255, 255, 255, 0.38);
+}
+.gem.stairs { --g1: #fff6cf; --g2: #f2b33d; --g3: #9a5a12; }
+.gem.green { --g1: #eaffd9; --g2: #6cc070; --g3: #1f5a3a; }
+.gem.life { --g1: #ffe9e0; --g2: #f0805f; --g3: #8f1f1a; }
+.gem.beauty { --g1: #ffffff; --g2: #c9b8f2; --g3: #4d3a8f; }
+.got > .gem { animation: collect 0.55s ease-out forwards; }
+@keyframes hover { from { transform: translateY(0); } to { transform: translateY(-5px); } }
+@keyframes collect { to { transform: translateY(-34px) scale(1.9); opacity: 0; } }
+.gem-icon {
+  display: inline-block; width: 0.72em; height: 0.9em; margin-right: 0.35em; vertical-align: -0.08em;
+  clip-path: polygon(50% 0, 100% 36%, 50% 100%, 0 36%); background: linear-gradient(135deg, #eaffff, #58d6e8 50%, #1f5673);
+}
+.pickup {
+  position: absolute; left: 50%; top: 26%; z-index: 6; pointer-events: none; white-space: nowrap; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis;
+  padding: 7px 14px 6px; border-radius: 999px; background: rgba(10, 16, 26, 0.78); color: #fff; font-weight: 700;
+  border: 1px solid rgba(140, 226, 240, 0.7); animation: pickup 2.8s ease-out both;
+}
+@keyframes pickup {
+  0% { opacity: 0; transform: translate(-50%, 14px) scale(0.85); }
+  12% { opacity: 1; transform: translate(-50%, 0) scale(1.06); }
+  20%, 78% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -16px) scale(1); }
+}
+.hud-gems { font-weight: 700; }
+
+.tally { display: flex; gap: 12px; align-items: baseline; margin-left: auto; background: none; border: 0; padding: 0; font-size: 0.875rem; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tally-streak { color: var(--orange); }
+.daily { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; padding: 10px 12px; border: 1.5px solid var(--ink); border-left: 6px solid var(--sun); border-radius: 4px; background: #fff; }
+.daily > div { display: grid; gap: 2px; min-width: 0; }
+.daily strong { font-size: 1.1rem; font-weight: 800; }
+.daily .btn { flex: none; }
+.daily-name { margin: 0 0 8px; font-weight: 700; }
+.logged { margin: 0 0 12px; padding: 9px 12px; border: 1.5px solid var(--ink); border-left: 6px solid var(--sun); border-radius: 4px; background: #fff8e1; font-weight: 600; }
+.meter { height: 12px; border: 1.5px solid var(--ink); border-radius: 3px; background: #fff; overflow: hidden; margin-bottom: 8px; }
+.meter i { display: block; height: 100%; background: var(--sun); }
+.badges { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.badges li { display: grid; gap: 2px; padding: 9px 10px; border: 1.5px dashed var(--line); border-radius: 4px; color: var(--ink-soft); }
+.badges li span { font-size: 0.8rem; }
+.badges li.earned { border: 1.5px solid var(--ink); border-left: 6px solid var(--sun); background: #fff; color: var(--ink); }
+.daily .label { font-weight: 600; font-size: 0.8rem; color: var(--ink-soft); }

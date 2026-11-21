@@ -15,7 +15,7 @@ export interface Road {
 
 export interface Vehicle {
   id: number;
-  type: 'car' | 'cable';
+  type: 'car' | 'cable' | 'ferry';
   /** Which paint job, for cars. */
   paint: number;
   at: LngLat;

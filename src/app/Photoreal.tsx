@@ -22,6 +22,8 @@ export interface PhotorealApi {
   vehicles(list: Vehicle[]): void;
   /** Mark the next turn with the name of the street to take, or clear it with null. */
   nextTurn(at: LngLat | null, label?: string): void;
+  /** The pickups along the walk still waiting to be collected. */
+  gems(list: { where: LngLat; label: string }[]): void;
 }
 
 /* The Maps library is loaded at run time and has no bundled types here. */
@@ -69,11 +71,21 @@ function svgMarker(lib: Maps3d, options: Record<string, unknown>, svg: string): 
   return marker;
 }
 
-const ORB_SVG =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">' +
-  '<defs><radialGradient id="g" cx="38%" cy="32%"><stop offset="0" stop-color="#fff"/><stop offset=".4" stop-color="#ffd27a"/><stop offset="1" stop-color="#e2542f"/></radialGradient>' +
-  '<radialGradient id="h"><stop offset="0" stop-color="#ffc86e" stop-opacity=".85"/><stop offset="1" stop-color="#ffc86e" stop-opacity="0"/></radialGradient></defs>' +
-  '<circle cx="22" cy="22" r="21" fill="url(#h)"/><circle cx="22" cy="22" r="9" fill="url(#g)" stroke="#fff" stroke-width="2.5"/></svg>';
+/** The walker: a small figure in international orange, standing in a pool of light. */
+const WALKER_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="46" height="60" viewBox="0 0 46 60">' +
+  '<defs><radialGradient id="h"><stop offset="0" stop-color="#ffc86e" stop-opacity=".9"/><stop offset="1" stop-color="#ffc86e" stop-opacity="0"/></radialGradient></defs>' +
+  '<ellipse cx="23" cy="52" rx="21" ry="8" fill="url(#h)"/>' +
+  '<g fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round"><path d="M23 22 V36 M23 36 L17 50 M23 36 L30 50 M23 25 L15 34 M23 25 L31 33"/></g>' +
+  '<circle cx="23" cy="12" r="8.5" fill="#fff"/>' +
+  '<g fill="none" stroke="#e2542f" stroke-width="5" stroke-linecap="round"><path d="M23 22 V36 M23 36 L17 50 M23 36 L30 50 M23 25 L15 34 M23 25 L31 33"/></g>' +
+  '<circle cx="23" cy="12" r="6" fill="#ffd27a" stroke="#e2542f" stroke-width="1.5"/></svg>';
+
+/** A pickup waiting on the route. */
+const PICKUP_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">' +
+  '<defs><linearGradient id="p" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#eaffff"/><stop offset=".45" stop-color="#58d6e8"/><stop offset="1" stop-color="#1f5673"/></linearGradient></defs>' +
+  '<path d="M17 2 L30 13 L17 32 L4 13 Z" fill="url(#p)" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/><path d="M4 13 H30 M11 13 L17 2 L23 13 L17 32 Z" fill="none" stroke="#fff" stroke-opacity=".7" stroke-width="1"/></svg>';
 
 const TURN_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30">' +
@@ -143,6 +155,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
     let cancelled = false;
     let walker: any = null;
     const fleet = new Map<number, any>();
+    const pickups = new Map<string, any>();
     let fleetWarned = false;
     loadMaps3d(apiKey)
       .then((lib) => {
@@ -190,12 +203,13 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
               walker = null;
               return;
             }
-            const position = { lat: at[1], lng: at[0], altitude: 4 };
+            const position = { lat: at[1], lng: at[0], altitude: 1.5 };
             if (!walker) {
-              walker = svgMarker(lib, { position, altitudeMode: 'RELATIVE_TO_GROUND' }, ORB_SVG);
+              walker = svgMarker(lib, { position, altitudeMode: 'RELATIVE_TO_GROUND' }, WALKER_SVG);
               map.append(walker);
             } else walker.position = position;
           },
+          ground: (at) => altitudeRef.current(at),
           height,
           reveal(path) {
             try {
@@ -268,7 +282,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
                 let model = fleet.get(v.id);
                 if (!model) {
                   model = new lib.Model3DElement({
-                    src: v.type === 'cable' ? '/models/cable-car.glb' : `/models/car-${v.paint}.glb`,
+                    src: v.type === 'cable' ? '/models/cable-car.glb' : v.type === 'ferry' ? '/models/ferry.glb' : `/models/car-${v.paint}.glb`,
                     position,
                     orientation,
                     // The photographed street surface sits a little above the plain terrain,
@@ -312,6 +326,25 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
               /* turn labels are a nicety */
             }
           },
+          gems(list) {
+            try {
+              const wanted = new Set(list.map((gem) => `${gem.where[0]},${gem.where[1]}`));
+              for (const [k, marker] of pickups) {
+                if (wanted.has(k)) continue;
+                marker.remove();
+                pickups.delete(k);
+              }
+              for (const gem of list) {
+                const k = `${gem.where[0]},${gem.where[1]}`;
+                if (pickups.has(k)) continue;
+                const marker = svgMarker(lib, { position: { lat: gem.where[1], lng: gem.where[0], altitude: 9 }, altitudeMode: 'RELATIVE_TO_GROUND', extruded: true }, PICKUP_SVG);
+                map.append(marker);
+                pickups.set(k, marker);
+              }
+            } catch {
+              /* pickups are a nicety */
+            }
+          },
           nudge(bearing, pitch) {
             map.heading = (((Number(map.heading) || 0) + bearing) % 360 + 360) % 360;
             map.tilt = Math.max(0, Math.min(88, (Number(map.tilt) || 0) + pitch));
@@ -326,6 +359,8 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
       walker?.remove();
       for (const model of fleet.values()) model.remove();
       fleet.clear();
+      for (const marker of pickups.values()) marker.remove();
+      pickups.clear();
       turnRef.current?.remove();
       turnRef.current = null;
       mapRef.current?.remove();

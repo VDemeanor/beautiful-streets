@@ -6,12 +6,16 @@ import type { Feature, FeatureCollection } from 'geojson';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as SunCalc from 'suncalc';
 import { haversine } from '@/lib/geo';
-import { startBirds } from './birds';
+import { Bay } from './bay';
 import { Flight, mapStage, RIGS, type FlightState } from './flight';
 import Photoreal, { type PhotorealApi } from './Photoreal';
+import { badges, coverage, dailyWalk, day, EMPTY_GAME, liveStreak, loadGame, recordWalk, routeGems, saveGame, type GameState } from './game';
+import { makeGround } from './ground';
+import { horizonY, skySpot, startSky, type SkyView } from './sky';
+import { Sound } from './sound';
 import { Traffic } from './traffic';
 import WeatherLayer from './Weather';
-import { applySun, CAMERA_3D, drawVehicles, installScene, installTrees, setSceneMode, sunOnScreen, type Sun } from './scene';
+import { applySun, CAMERA_3D, drawVehicles, installLights, installScene, installTrees, setSceneMode, sunOnScreen, type Sun } from './scene';
 import type { LngLat, Route, RouteLeg, Side, WalkContext } from '@/lib/types';
 
 interface MapBlock {
@@ -24,6 +28,8 @@ interface MapBlock {
   score: number;
   votes: number;
   dims: [number, number, number, number];
+  elev: number | null;
+  grade: number;
 }
 interface Me {
   id: string;
@@ -36,7 +42,7 @@ interface Card {
   bearing: number;
   coords: LngLat[];
 }
-type Tab = 'walk' | 'vote' | 'rank';
+type Tab = 'walk' | 'vote' | 'rank' | 'you';
 
 type Mood = 'balanced' | 'views' | 'quiet' | 'lively';
 /** What each mood asks of the four beauty scores: views, greenery, architecture, street life. */
@@ -123,6 +129,19 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
   const introFor = useRef<unknown>(null);
   const [sunSpot, setSunSpot] = useState<{ x: number; y: number; above: boolean } | null>(null);
   const [skyPhase, setSkyPhase] = useState<'night' | 'golden' | 'day'>('day');
+  /** The hour shown: the real one, or day or night on request. */
+  const [timeMode, setTimeMode] = useState<'auto' | 'day' | 'night'>('auto');
+  const [treesIn, setTreesIn] = useState(false);
+  const [nightSky, setNightSky] = useState<{ horizon: number; fade: number; moon: { x: number; y: number } | null } | null>(null);
+  const [game, setGame] = useState<GameState>(EMPTY_GAME);
+  const [logged, setLogged] = useState<{ newStreets: number; gems: number; streak: number } | null>(null);
+  const [isDaily, setIsDaily] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [pickup, setPickup] = useState<{ n: number; label: string } | null>(null);
+  const sound = useRef<Sound | null>(null);
+  const gemMarkers = useRef<maplibregl.Marker[]>([]);
+  const realNow = useRef(false);
+  const nightNow = useRef(false);
 
   const [start, setStart] = useState<LngLat | null>(null);
   const [minutes, setMinutes] = useState(45);
@@ -207,6 +226,22 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
             'line-opacity': 0.85,
           },
         });
+        // Streets already walked stay lit: a soft glow under a bright gold line.
+        map.addSource('walked', { type: 'geojson', data: empty });
+        map.addLayer({
+          id: 'walked-glow',
+          type: 'line',
+          source: 'walked',
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: { 'line-color': '#ffc93c', 'line-width': ['interpolate', ['linear'], ['zoom'], 12, 5, 17, 20], 'line-blur': 8, 'line-opacity': 0.55 },
+        });
+        map.addLayer({
+          id: 'walked',
+          type: 'line',
+          source: 'walked',
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: { 'line-color': '#ffd966', 'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1.6, 17, 5] },
+        });
         // Wide invisible line so thin streets are easy to tap.
         map.addLayer({ id: 'blocks-hit', type: 'line', source: 'blocks', paint: { 'line-width': 18, 'line-opacity': 0 } });
         map.addLayer({
@@ -241,7 +276,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
           .then((j: { trees: LngLat[] }) => {
             if (!cancelled && map) {
               installTrees(map, j.trees);
-              setSceneMode(map, true, false);
+              setTreesIn(true);
             }
           })
           .catch(() => undefined);
@@ -501,6 +536,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
 
   // Street life: cars and the Hyde Street cable car, around wherever the camera is looking.
   const traffic = useMemo(() => (blocks.length ? new Traffic(blocks.map((b) => ({ name: b.name, kind: b.kind, coords: b.coords }))) : null), [blocks]);
+  const bay = useMemo(() => new Bay(), []);
   useEffect(() => {
     if (!mapReady || !traffic || !threeD || calm()) return;
     const map = mapRef.current!;
@@ -513,39 +549,84 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
       const api = real ? realApi.current : null;
       const c = map.getCenter();
       const focus: LngLat = api ? api.stage.current().look : [c.lng, c.lat];
-      const vehicles = traffic.step(dt, focus);
+      const vehicles = [...traffic.step(dt, focus), ...bay.step(dt)];
       // The real city redraws models, which is heavier, so it updates a little less often.
       if (now - drawn > (api ? 50 : 33)) {
         drawn = now;
         if (api) api.vehicles(vehicles);
-        else if (!real && map.getZoom() > 14.4) drawVehicles(map, vehicles);
+        else if (!real && map.getZoom() > 13) drawVehicles(map, vehicles, nightNow.current);
       }
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, traffic, threeD, real, realReady]);
+  }, [mapReady, traffic, bay, threeD, real, realReady]);
 
-  // Gulls over the city, in 3D only.
+  realNow.current = real;
+  nightNow.current = skyPhase === 'night';
+  /** The camera in use, whichever city is showing: what the sky is drawn through. */
+  const skyView = useCallback((): SkyView | null => {
+    const map = mapRef.current;
+    const el = birdsEl.current;
+    if (!map || !el) return null;
+    const box = el.getBoundingClientRect();
+    if (realNow.current) {
+      const api = realApi.current;
+      return api ? { shot: api.stage.current(), width: box.width, height: box.height } : null;
+    }
+    const c = map.getCenter();
+    return { shot: { look: [c.lng, c.lat], bearing: map.getBearing(), pitch: map.getPitch(), zoom: map.getZoom(), lens: map.getVerticalFieldOfView?.() ?? 36.87 }, width: box.width, height: box.height };
+  }, []);
+
+  // Gulls and aircraft over the city, in 3D only.
   useEffect(() => {
     if (!mapReady || !threeD || !birdsEl.current || calm()) return;
-    return startBirds(mapRef.current!, birdsEl.current);
-  }, [mapReady, threeD]);
+    return startSky(birdsEl.current, skyView, () => nightNow.current);
+  }, [mapReady, threeD, skyView]);
 
-  // Flat or 3D.
+  // Flat or 3D, by day or by night. Street lamps go in once the streets are known.
   useEffect(() => {
-    if (mapReady) setSceneMode(mapRef.current!, threeD, scores);
-  }, [mapReady, threeD, scores]);
+    if (!mapReady) return;
+    const map = mapRef.current!;
+    if (blocks.length) installLights(map, blocks);
+    setSceneMode(map, threeD, scores, skyPhase === 'night');
+    // The You tab shows the collection: every other street fades back.
+    if (tab === 'you' && map.getLayer('blocks')) map.setPaintProperty('blocks', 'line-opacity', threeD ? 0 : 0.2);
+  }, [mapReady, threeD, scores, skyPhase, blocks, treesIn, tab]);
+
+  // Progress in the game, kept in this browser.
+  useEffect(() => {
+    setGame(loadGame());
+    try {
+      setMuted(window.localStorage.getItem('bs.sound') === 'off');
+    } catch {
+      /* storage unavailable */
+    }
+    sound.current = new Sound();
+    return () => sound.current?.dispose();
+  }, []);
+  useEffect(() => {
+    sound.current?.setMuted(muted);
+  }, [muted]);
+
+  // Light up the streets already walked.
+  useEffect(() => {
+    if (!mapReady) return;
+    (mapRef.current!.getSource('walked') as GeoJSONSource | undefined)?.setData(lines(blocks.filter((b) => game.walked[b.id]).map((b) => line(b.coords, {}))));
+  }, [mapReady, blocks, game.walked]);
 
   // Where the sun is: at the walk's start time once a walk is designed, otherwise now.
   const sun: Sun = useMemo(() => {
+    const cloud = plan?.ctx.weather?.cloudPct ?? nowCtx?.weather?.cloudPct ?? 20;
+    if (timeMode === 'day') return { azimuth: 205, altitude: 46, cloud };
+    if (timeMode === 'night') return { azimuth: 300, altitude: -32, cloud };
     if (plan) return { azimuth: plan.ctx.sunAzimuth, altitude: plan.ctx.sunAltitude, cloud: plan.ctx.weather?.cloudPct ?? 20 };
     if (nowCtx) return { azimuth: nowCtx.sunAzimuth, altitude: nowCtx.sunAltitude, cloud: nowCtx.weather?.cloudPct ?? 20 };
     const at = start ?? [-122.4194, 37.8021];
     const pos = SunCalc.getPosition(new Date(), at[1], at[0]);
     return { azimuth: pos.azimuth, altitude: pos.altitude, cloud: 20 };
-  }, [plan, start, nowCtx]);
+  }, [plan, start, nowCtx, timeMode]);
 
   // Light the scene from the sun and keep the sun disc in the right spot of the sky.
   useEffect(() => {
@@ -559,6 +640,32 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
       map.off('move', place);
     };
   }, [mapReady, sun, threeD]);
+
+  // Stars and the moon. They sit over the picture, so they fade out when the camera
+  // comes down among the buildings, where rooftops would cut into the sky.
+  useEffect(() => {
+    if (!mapReady || !threeD || skyPhase !== 'night') {
+      setNightSky(null);
+      return;
+    }
+    const tick = () => {
+      const v = skyView();
+      if (!v) return;
+      const horizon = Math.round(horizonY(v));
+      const fade = Math.max(0, Math.min(1, (77 - v.shot.pitch) / 9));
+      const at = start ?? [-122.4194, 37.8021];
+      const moonAt = SunCalc.getMoonPosition(plan ? new Date(plan.ctx.when) : new Date(), at[1], at[0]);
+      const moon = skySpot(v, moonAt.azimuth, moonAt.altitude);
+      setNightSky((cur) => {
+        const next = horizon > 24 && fade > 0.02 ? { horizon, fade: Math.round(fade * 20) / 20, moon: moon ? { x: Math.round(moon.x), y: Math.round(moon.y) } : null } : null;
+        return JSON.stringify(cur) === JSON.stringify(next) ? cur : next;
+      });
+    };
+    tick();
+    const timer = window.setInterval(tick, 90);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, threeD, skyPhase, skyView, plan, start?.[0], start?.[1]]);
 
   const calm = () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -592,6 +699,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     const view = overview();
     if (!map || !plan || !view) return;
     flightRef.current?.dispose();
+    sound.current?.unlock();
     setThreeD(true);
     const flight = new Flight(real && realApi.current ? realApi.current.stage : mapStage(map), plan.route.legs, view, setFilm, calm());
     if (!flight.valid) {
@@ -622,26 +730,8 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     }
   }, [gKey]);
 
-  /** Ground height near a point, taken from the walk's own blocks. */
-  const altitude = useCallback(
-    (at: LngLat) => {
-      const legs = plan?.route.legs;
-      if (!legs?.length) return 60;
-      let best = 60;
-      let bestD = Infinity;
-      for (const l of legs) {
-        if (l.elev == null) continue;
-        const m = l.coords[Math.floor(l.coords.length / 2)];
-        const d = (m[0] - at[0]) ** 2 + (m[1] - at[1]) ** 2;
-        if (d < bestD) {
-          bestD = d;
-          best = l.elev;
-        }
-      }
-      return best;
-    },
-    [plan],
-  );
+  /** Ground height anywhere on the streets, in metres above sea level. */
+  const ground = useMemo(() => makeGround(blocks), [blocks]);
 
   const toggleReal = () => {
     if (real) {
@@ -740,6 +830,50 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     Math.abs(angle) > 150 ? 'Turn around' : Math.abs(angle) < 25 ? 'Continue' : `${Math.abs(angle) < 60 ? 'Bear' : 'Turn'} ${angle < 0 ? 'left' : 'right'}`;
   const feetOrMiles = (m: number) => (m < 300 ? `${Math.max(10, Math.round((m * 3.28084) / 10) * 10)} ft` : `${miles(m)} mi`);
 
+  // Gems wait at the best spots of the walk and are picked up as the walker passes.
+  const gems = useMemo(() => (plan ? routeGems(plan.route.legs, (id) => byId.get(id)) : []), [plan, byId]);
+  const gemsGot = film ? gems.filter((g) => g.at <= film.metres + 3).length : 0;
+  useEffect(() => {
+    for (const m of gemMarkers.current) m.remove();
+    gemMarkers.current = [];
+    if (!mapReady || tab !== 'walk') return;
+    for (const gem of gems) {
+      // The marker's own element is moved by the map, so the animated gem is a child.
+      const el = document.createElement('div');
+      const inner = document.createElement('div');
+      inner.className = `gem ${gem.kind}`;
+      inner.title = gem.label;
+      el.appendChild(inner);
+      gemMarkers.current.push(new maplibregl.Marker({ element: el, anchor: 'bottom', opacityWhenCovered: '1' }).setLngLat(gem.where).addTo(mapRef.current!));
+    }
+  }, [mapReady, gems, tab]);
+  const gotBefore = useRef(0);
+  useEffect(() => {
+    gemMarkers.current.forEach((m, i) => m.getElement().classList.toggle('got', i < gemsGot));
+    if (real) realApi.current?.gems(tab === 'walk' ? gems.slice(gemsGot).map((g) => ({ where: g.where, label: g.label })) : []);
+    if (film?.playing && film.phase === 'travel' && gemsGot > gotBefore.current) {
+      sound.current?.chime(gemsGot);
+      setPickup({ n: gemsGot, label: gems[gemsGot - 1].label });
+    }
+    gotBefore.current = gemsGot;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gemsGot, gems, real, realReady, tab]);
+  useEffect(() => {
+    if (!pickup) return;
+    const t = window.setTimeout(() => setPickup(null), 2800);
+    return () => window.clearTimeout(t);
+  }, [pickup]);
+
+  // Footsteps and city air while the walker is moving; a flourish at the finish.
+  const moving = !!film?.playing && film.phase === 'travel';
+  useEffect(() => {
+    sound.current?.walking(moving, skyPhase !== 'night');
+    return () => sound.current?.walking(false);
+  }, [moving, skyPhase, muted]);
+  useEffect(() => {
+    if (film?.phase === 'finale') sound.current?.fanfare();
+  }, [film?.phase]);
+
   // Label the coming turn out in the city, when the stage can.
   const turnKey = nextTurn ? `${nextTurn.at}` : '';
   useEffect(() => {
@@ -756,6 +890,38 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
 
   const filmLeg = film && plan ? plan.route.legs[Math.min(film.leg, plan.route.legs.length - 1)] : null;
   const filmStep = filmLeg && plan ? plan.route.steps[filmLeg.step] : null;
+  // The cable car rings its bell as the walk joins Hyde Street.
+  const onHyde = moving && !!filmStep?.name.includes('Hyde');
+  useEffect(() => {
+    if (onHyde) sound.current?.bell();
+  }, [onHyde]);
+
+  const [today, setToday] = useState('');
+  useEffect(() => setToday(day()), []);
+  const daily = useMemo(() => (today ? dailyWalk(today) : null), [today]);
+  const cover = useMemo(() => coverage(game, blocks), [game, blocks]);
+  const badgeList = useMemo(() => badges(game, cover), [game, cover]);
+  const streak = today ? liveStreak(game, today) : 0;
+
+  /** Count the designed walk as walked: its streets, its gems and today's streak. */
+  const logWalk = () => {
+    if (!plan || logged) return;
+    const result = recordWalk(game, { blockIds: plan.route.legs.map((l) => l.blockId), lengthM: plan.route.lengthM, climbM: plan.route.climbM, gems: gems.length, ctx: plan.ctx });
+    setGame(result.state);
+    saveGame(result.state);
+    setLogged({ newStreets: result.newStreets, gems: gems.length, streak: result.state.streak });
+    sound.current?.fanfare();
+  };
+
+  const toggleSound = () => {
+    const next = !muted;
+    setMuted(next);
+    try {
+      window.localStorage.setItem('bs.sound', next ? 'off' : 'on');
+    } catch {
+      /* storage unavailable */
+    }
+  };
 
   useEffect(() => {
     if (!toast) return;
@@ -785,17 +951,24 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     if (tab === 'rank') api<NonNullable<typeof board>>('/api/leaderboard').then(setBoard).catch(() => setBoard(null));
   }, [tab, duel, blocks.length, nextDuel]);
 
-  const designWalk = async () => {
+  const designWalk = async (preset?: { mood: Mood; minutes: number; hills: 'avoid' | 'ok' | 'seek' }) => {
     if (!start) return;
+    if (preset) {
+      setMood(preset.mood);
+      setMinutes(preset.minutes);
+      setHills(preset.hills);
+    }
+    setIsDaily(!!preset);
+    setLogged(null);
     setPlanning(true);
     setPlanError('');
     setRating(false);
     setStars({});
     setSidePick({});
     try {
-      const weights = MOODS.find((m) => m.id === mood)!.weights;
+      const weights = MOODS.find((m) => m.id === (preset?.mood ?? mood))!.weights;
       const weightsObj = Object.fromEntries(DIM_KEYS.map((k, i) => [k, weights[i]]));
-      setPlan(await api('/api/plan', { start, minutes, weights: weightsObj, hills, noStairs, when: when ? new Date(when).toISOString() : undefined }));
+      setPlan(await api('/api/plan', { start, minutes: preset?.minutes ?? minutes, weights: weightsObj, hills: preset?.hills ?? hills, noStairs, when: when ? new Date(when).toISOString() : undefined }));
     } catch (err) {
       setPlan(null);
       setPlanError(err instanceof Error ? err.message : String(err));
@@ -866,12 +1039,14 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
         {sunSpot && (
           <div className={`sun ${skyPhase}${sunSpot.above ? ' above' : ''}`} style={{ left: sunSpot.x, top: sunSpot.y }} aria-hidden="true" />
         )}
+        {nightSky && <div className="stars" style={{ height: nightSky.horizon, opacity: nightSky.fade }} aria-hidden="true" />}
+        {nightSky?.moon && <div className="moon" style={{ left: nightSky.moon.x, top: nightSky.moon.y, opacity: nightSky.fade }} aria-hidden="true" />}
         {real && gKey && start && (
           <Photoreal
             apiKey={gKey}
             start={start}
             legs={plan?.route.legs ?? null}
-            altitude={altitude}
+            altitude={ground}
             onReady={(api) => {
               realApi.current = api;
               setRealReady(!!api);
@@ -913,7 +1088,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
         {film && film.cuts > 0 && <div key={`cut-${film.cuts}`} className="cut" aria-hidden="true" />}
         {film?.phase === 'finale' && (
           <div className="finale" role="status">
-            <span>Walk complete</span>
+            <span>Walk complete{gems.length ? `: ${gems.length} gems on this route` : ''}</span>
             {Array.from({ length: 14 }, (_, i) => <i key={i} className="spark" style={{ ['--i' as string]: i }} />)}
           </div>
         )}
@@ -932,6 +1107,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
             </div>
             <div className="hud-progress">
               <span>{miles(film.metres)} of {miles(film.total)} mi</span>
+              {gems.length > 0 && <span className="hud-gems"><i className="gem-icon" aria-hidden="true" />{gemsGot} of {gems.length} gems</span>}
               <span>{Math.max(0, Math.round(plan.route.minutes * (1 - film.progress)))} min of walking left</span>
             </div>
           </div>
@@ -940,6 +1116,13 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
           <div className="lower-third" key={`caption-${filmLeg!.step}`}>
             <span className="plate">{filmStep.name}</span>
             {filmStep.sideLabel && <span className="lower-note">{filmStep.sideLabel} side, {filmStep.reason}</span>}
+          </div>
+        )}
+
+        {film && pickup && (
+          <div className="pickup" key={`pickup-${pickup.n}`} role="status">
+            <i className="gem-icon" aria-hidden="true" />
+            {pickup.label}
           </div>
         )}
 
@@ -956,6 +1139,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
               onChange={(e) => flightRef.current?.seek(Number(e.target.value) / 1000)}
             />
             <button className="tbtn" aria-label="Playback speed" onClick={() => flightRef.current?.setSpeed(film.speed >= 4 ? 1 : film.speed * 2)}>{film.speed}×</button>
+            <button className="tbtn" aria-label="Sound" aria-pressed={!muted} title={muted ? 'Sound is off' : 'Sound is on'} onClick={toggleSound}>♪</button>
             <button className="tbtn" aria-label="End film" onClick={endFilm}>✕</button>
             <div className="rigs">
               {RIGS.map((r) => (
@@ -974,6 +1158,14 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
                 <button className="tbtn" aria-label="Tilt toward the horizon" onClick={() => nudge(0, 10)}>▲</button>
                 <button className="tbtn" aria-label="Tilt toward the ground" onClick={() => nudge(0, -10)}>▼</button>
                 {!real && <button className="tbtn" aria-pressed={scores} title="Colour every street by its beauty score" onClick={() => setScores((v) => !v)}>Scores</button>}
+                <button
+                  className="tbtn"
+                  aria-label={`Time of day shown: ${timeMode === 'auto' ? 'the real time' : timeMode}. Press to change.`}
+                  title="Show the city as it is now, by day, or by night"
+                  onClick={() => setTimeMode((m) => (m === 'auto' ? 'day' : m === 'day' ? 'night' : 'auto'))}
+                >
+                  {timeMode === 'auto' ? 'Now' : timeMode === 'day' ? 'Day' : 'Night'}
+                </button>
               </>
             )}
             {plan && <button className="tbtn play" onClick={startFilm}>▶ Play the walk</button>}
@@ -1015,6 +1207,10 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
       <section className="sheet">
         <div className="masthead">
           <h1>Beautiful Streets</h1>
+          <button className="tally" onClick={() => setTab('you')} aria-label={`Your progress: ${streak} day streak, ${game.gems} gems`}>
+            {streak > 0 && <span className="tally-streak">{streak}-day streak</span>}
+            <span><i className="gem-icon" aria-hidden="true" />{game.gems}</span>
+          </button>
           {me ? (
             <button className="who" onClick={invite}>{me.name} · invite a friend</button>
           ) : (
@@ -1022,7 +1218,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
           )}
         </div>
         <div className="tabs" role="tablist">
-          {([['walk', 'Walk'], ['vote', 'Vote'], ['rank', 'Ranking']] as [Tab, string][]).map(([id, label]) => (
+          {([['walk', 'Walk'], ['vote', 'Vote'], ['rank', 'Ranking'], ['you', 'You']] as [Tab, string][]).map(([id, label]) => (
             <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>{label}</button>
           ))}
         </div>
@@ -1034,6 +1230,16 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
             <>
               {!route && (
                 <>
+                  {daily && (
+                    <div className="daily">
+                      <div>
+                        <span className="label">Today&rsquo;s walk</span>
+                        <strong>{daily.title}</strong>
+                        <span className="muted">{daily.minutes} minutes. {daily.blurb}.{game.last === today ? ' You have walked today.' : streak > 0 ? ` Walk today to keep your ${streak}-day streak.` : ''}</span>
+                      </div>
+                      <button className="btn small" disabled={planning || !start || !blocks.length} onClick={() => designWalk(daily)}>Design it</button>
+                    </div>
+                  )}
                   <div className="field place">
                     <label htmlFor="start">Start from</label>
                     <div className="row">
@@ -1086,7 +1292,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
                     <input id="when" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
                   </div>
                   {planError && <p className="error">{planError}</p>}
-                  <button className="btn primary" disabled={planning || !start || !blocks.length} onClick={designWalk}>
+                  <button className="btn primary" disabled={planning || !start || !blocks.length} onClick={() => designWalk()}>
                     {planning ? 'Designing…' : 'Design my walk'}
                   </button>
                 </>
@@ -1100,7 +1306,16 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
                     <div><strong>{feet(route.climbM)}</strong><span>feet of climb</span></div>
                     <div><strong>{Math.round(route.meanScore * 100)}</strong><span>beauty of 100</span></div>
                   </div>
-                  <ul className="notes">{plan.ctx.notes.map((n) => <li key={n}>{n}</li>)}</ul>
+                  {isDaily && daily && <p className="daily-name">Today&rsquo;s walk: {daily.title}</p>}
+                  {logged && (
+                    <p className="logged" role="status">
+                      Walk logged. {logged.newStreets} new {logged.newStreets === 1 ? 'block' : 'blocks'} on your map, {logged.gems} gems, {logged.streak}-day streak.
+                    </p>
+                  )}
+                  <ul className="notes">
+                    {gems.length > 0 && <li>{gems.length} gems on this route, at its best spots.</li>}
+                    {plan.ctx.notes.map((n) => <li key={n}>{n}</li>)}
+                  </ul>
                   <ol className="steps">
                     {route.steps.map((s, i) => (
                       <li key={i}>
@@ -1132,13 +1347,40 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
                     {rating ? (
                       <button className="btn primary" onClick={saveRatings}>Save ratings</button>
                     ) : (
-                      <button className="btn primary" onClick={() => setRating(true)}>I walked it: rate the streets</button>
+                      <button className="btn primary" onClick={() => { logWalk(); setRating(true); }}>I walked it: rate the streets</button>
                     )}
                     <button className="btn" onClick={startFilm}>▶ Play the walk</button>
-                    <button className="btn" onClick={() => { endFilm(); setPlan(null); setRating(false); }}>Design another</button>
+                    <button className="btn" onClick={() => { endFilm(); setPlan(null); setRating(false); setLogged(null); }}>Design another</button>
                   </div>
                 </>
               )}
+            </>
+          )}
+
+          {tab === 'you' && (
+            <>
+              <div className="stats">
+                <div><strong>{streak}</strong><span>day streak</span></div>
+                <div><strong>{game.gems}</strong><span>gems</span></div>
+                <div><strong>{game.walks.length}</strong><span>{game.walks.length === 1 ? 'walk' : 'walks'}</span></div>
+                <div><strong>{(cover.fraction * 100).toFixed(1)}%</strong><span>of the map walked</span></div>
+              </div>
+              <div className="meter" role="img" aria-label={`${(cover.fraction * 100).toFixed(1)} percent of the streets walked`}>
+                <i style={{ width: `${Math.max(cover.fraction * 100, 0.6)}%` }} />
+              </div>
+              <p className="muted">
+                {miles(cover.metres)} of {miles(cover.total)} miles of street walked. Streets you have walked glow gold on the map{threeD ? '; turn off 3D to see them all at once' : ''}.
+              </p>
+              {!game.walks.length && <p className="muted">Design a walk, go and walk it, then press &ldquo;I walked it&rdquo; to light up its streets and keep its gems.</p>}
+              <h2>Badges</h2>
+              <ul className="badges">
+                {badgeList.map((b) => (
+                  <li key={b.id} className={b.earned ? 'earned' : undefined}>
+                    <strong>{b.name}</strong>
+                    <span>{b.earned ? 'Earned' : `${b.how}${b.progress ? ` (${b.progress})` : ''}`}</span>
+                  </li>
+                ))}
+              </ul>
             </>
           )}
 

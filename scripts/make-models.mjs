@@ -127,11 +127,32 @@ export function cableCar() {
   return buildGlb(boxes, materials);
 }
 
+/** A bay ferry, about 40 m long: dark hull, white decks, a wheelhouse forward. */
+export function ferry() {
+  const materials = [paint([0.07, 0.14, 0.26], 0.1, 0.6), paint([0.95, 0.95, 0.93], 0, 0.6), GLASS, paint([0.8, 0.2, 0.12], 0.1, 0.6), lamp([1, 0.95, 0.8])];
+  const w = 5;
+  const boxes = [
+    { min: [-w, 0, -19], max: [w, 2.2, 17], mat: 0 }, // hull
+    { min: [-w * 0.6, 0, 17], max: [w * 0.6, 2.2, 20.5], mat: 0 }, // bow
+    { min: [-w, 2.2, -19], max: [w, 2.5, 17], mat: 3 }, // red sheer line
+    { min: [-w + 0.4, 2.5, -17], max: [w - 0.4, 5.2, 13], mat: 1 }, // main deck cabin
+    { min: [-w + 0.35, 3.3, -16.5], max: [w - 0.35, 4.4, 12.5], mat: 2 }, // window band
+    { min: [-w + 1, 5.2, -15], max: [w - 1, 7.6, 8], mat: 1 }, // upper deck
+    { min: [-w + 0.95, 5.9, -14.5], max: [w - 0.95, 6.9, 7.5], mat: 2 },
+    { min: [-2.4, 7.6, 2], max: [2.4, 9.8, 7.5], mat: 1 }, // wheelhouse
+    { min: [-2.45, 8.4, 2.5], max: [2.45, 9.3, 7.55], mat: 2 },
+    { min: [-1, 7.6, -9], max: [1, 10.6, -6.5], mat: 3 }, // funnel
+    { min: [-0.3, 9.8, 4], max: [0.3, 12.5, 4.6], mat: 1 }, // mast
+    { min: [-0.3, 12.5, 4], max: [0.3, 12.9, 4.6], mat: 4 },
+  ];
+  return buildGlb(boxes, materials);
+}
+
 /** Car colours in roughly the proportions seen on the street. */
 export const CAR_PAINTS = [
   [0.93, 0.93, 0.92], // white
   [0.7, 0.72, 0.74], // silver
-  [0.08, 0.08, 0.09], // black
+  [0.13, 0.135, 0.15], // black
   [0.33, 0.36, 0.4], // grey
   [0.13, 0.22, 0.4], // blue
   [0.55, 0.09, 0.08], // red
@@ -141,5 +162,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   mkdirSync('public/models', { recursive: true });
   CAR_PAINTS.forEach((c, i) => writeFileSync(`public/models/car-${i}.glb`, car(c)));
   writeFileSync('public/models/cable-car.glb', cableCar());
-  console.log(`Wrote ${CAR_PAINTS.length} cars and a cable car to public/models.`);
+  writeFileSync('public/models/ferry.glb', ferry());
+  console.log(`Wrote ${CAR_PAINTS.length} cars, a cable car and a ferry to public/models.`);
 }

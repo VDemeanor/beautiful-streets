@@ -24,6 +24,21 @@ function rng(seed: number) {
   };
 }
 
+/**
+ * Night versions of the skins. While one is being painted, windows that are
+ * lit are remembered here; once the wall is finished it is dropped into
+ * darkness and the lit windows are painted back over it, glowing.
+ */
+let NIGHT = false;
+let LIT: [number, number, number, number, boolean][] = [];
+let litRand: () => number = Math.random;
+
+function begin(seed: number, night: boolean) {
+  NIGHT = night;
+  LIT = [];
+  litRand = rng(seed * 31 + 7);
+}
+
 function canvas(): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const cv = document.createElement('canvas');
   cv.width = cv.height = SIZE * SKIN_SCALE;
@@ -62,6 +77,37 @@ function grain(g: CanvasRenderingContext2D, rand: () => number, amount: number, 
 }
 
 function finish(cv: HTMLCanvasElement, g: CanvasRenderingContext2D): Skin {
+  if (NIGHT) {
+    g.fillStyle = 'rgba(8, 12, 28, 0.76)';
+    g.fillRect(0, 0, SIZE, SIZE);
+    for (const [x, y, w, h, cool] of LIT) {
+      // Light spilling onto the wall around the window.
+      const cx = x + w / 2;
+      const cy = y + h / 2;
+      const reach = Math.max(w, h) * 1.25;
+      const halo = g.createRadialGradient(cx, cy, 0, cx, cy, reach);
+      halo.addColorStop(0, cool ? 'rgba(150,185,255,0.22)' : 'rgba(255,196,110,0.3)');
+      halo.addColorStop(1, 'rgba(255,196,110,0)');
+      g.fillStyle = halo;
+      g.fillRect(cx - reach, cy - reach, reach * 2, reach * 2);
+      const glow = g.createLinearGradient(0, y, 0, y + h);
+      if (cool) {
+        glow.addColorStop(0, '#cfe0ff'); // a television
+        glow.addColorStop(1, '#8fb0ee');
+      } else {
+        glow.addColorStop(0, '#ffe9b0');
+        glow.addColorStop(1, '#f6a94c');
+      }
+      g.fillStyle = glow;
+      g.fillRect(x, y, w, h);
+      if (litRand() < 0.5) {
+        g.fillStyle = 'rgba(120, 70, 30, 0.28)'; // a blind half drawn
+        g.fillRect(x, y, w, h * (0.2 + litRand() * 0.35));
+      }
+      g.fillStyle = 'rgba(40, 28, 20, 0.7)'; // sash bar against the light
+      g.fillRect(x, y + h * 0.48, w, 0.8);
+    }
+  }
   const px = SIZE * SKIN_SCALE;
   const d = g.getImageData(0, 0, px, px);
   return { width: cv.width, height: cv.height, data: new Uint8Array(d.data.buffer) };
@@ -94,6 +140,7 @@ function windowAt(g: CanvasRenderingContext2D, rand: () => number, x: number, y:
   g.fill();
   g.fillStyle = trim; // sash bar
   g.fillRect(x, y + h * 0.48, w, 0.8);
+  if (NIGHT && litRand() < 0.34) LIT.push([x, y, w, h, litRand() < 0.14]);
   g.fillStyle = 'rgba(255,255,255,0.75)'; // sill catching the light
   g.fillRect(x - 2.2, y + h + 1.2, w + 4.4, 1.3);
   const drip = g.createLinearGradient(0, y + h + 2.5, 0, y + h + 9);
@@ -104,7 +151,8 @@ function windowAt(g: CanvasRenderingContext2D, rand: () => number, x: number, y:
 }
 
 /** Painted stucco or wood siding: the San Francisco house. */
-export function houseSkin(color: string, seed: number, siding: boolean): Skin {
+export function houseSkin(color: string, seed: number, siding: boolean, night = false): Skin {
+  begin(seed, night);
   const rand = rng(seed);
   const [cv, g] = canvas();
   g.fillStyle = color;
@@ -140,7 +188,8 @@ export function houseSkin(color: string, seed: number, siding: boolean): Skin {
 }
 
 /** Brick apartment block. */
-export function brickSkin(base: [number, number, number], seed: number): Skin {
+export function brickSkin(base: [number, number, number], seed: number, night = false): Skin {
+  begin(seed, night);
   const rand = rng(seed);
   const [cv, g] = canvas();
   g.fillStyle = '#b9b0a4'; // mortar
@@ -169,7 +218,8 @@ export function brickSkin(base: [number, number, number], seed: number): Skin {
 }
 
 /** Concrete mid-rise with ribbon windows. */
-export function concreteSkin(color: string, seed: number): Skin {
+export function concreteSkin(color: string, seed: number, night = false): Skin {
+  begin(seed, night);
   const rand = rng(seed);
   const [cv, g] = canvas();
   g.fillStyle = color;
@@ -188,6 +238,7 @@ export function concreteSkin(color: string, seed: number): Skin {
       glass.addColorStop(1, `rgb(${tone + 34},${tone + 46},${tone + 56})`);
       g.fillStyle = glass;
       g.fillRect(x + 0.7, y, 14.6, 14);
+      if (NIGHT && litRand() < 0.3) LIT.push([x + 0.7, y, 14.6, 14, litRand() < 0.2]);
       if (rand() < 0.4) {
         g.fillStyle = 'rgba(232,226,210,0.6)';
         g.fillRect(x + 0.7, y, 14.6, 3 + rand() * 6);
@@ -206,7 +257,8 @@ export function concreteSkin(color: string, seed: number): Skin {
 }
 
 /** Curtain-wall glass for the towers. */
-export function glassSkin(tint: [number, number, number], seed: number): Skin {
+export function glassSkin(tint: [number, number, number], seed: number, night = false): Skin {
+  begin(seed, night);
   const rand = rng(seed);
   const [cv, g] = canvas();
   const cols = 6;
@@ -227,6 +279,7 @@ export function glassSkin(tint: [number, number, number], seed: number): Skin {
         g.fillStyle = 'rgba(255,236,190,0.35)'; // a lit office
         g.fillRect(x, y, cw, ch);
       }
+      if (NIGHT && litRand() < 0.2) LIT.push([x + 0.9, y + 3.6, cw - 0.9, ch - 3.6, litRand() < 0.3]);
     }
   for (let r = 0; r < rows; r++) {
     g.fillStyle = 'rgba(40,48,56,0.55)'; // spandrel
@@ -243,7 +296,8 @@ export function glassSkin(tint: [number, number, number], seed: number): Skin {
 }
 
 /** Flat roof: tar and gravel, or a pale membrane, with seams and stains. */
-export function roofSkin(color: string, seed: number): Skin {
+export function roofSkin(color: string, seed: number, night = false): Skin {
+  begin(seed, night);
   const rand = rng(seed);
   const [cv, g] = canvas();
   g.fillStyle = color;

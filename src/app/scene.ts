@@ -43,6 +43,27 @@ function squares(points: LngLat[], halfMetres: number): FeatureCollection {
   return { type: 'FeatureCollection', features };
 }
 
+const tall = ['>', ['coalesce', ['get', 'render_height'], 9], 42];
+const mid = ['>', ['coalesce', ['get', 'render_height'], 9], 19];
+const numbered = (prefix: string, n: number) => ['concat', prefix, ['to-string', pick(n)]];
+const list = (colours: string[], n: number) => ['match', pick(n), ...colours.slice(0, n - 1).flatMap((c, i) => [i, c]), colours[n - 1]];
+/** Mix two hex colours. */
+const mix = (a: string, b: string, t: number) => {
+  const p = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [x, y] = [p(a), p(b)];
+  return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * Math.max(0, Math.min(1, t))).toString(16).padStart(2, '0')).join('');
+};
+const NIGHT_INK = '#090d1e';
+const dusk = (colours: string[], night: boolean) => (night ? colours.map((c) => mix(c, NIGHT_INK, 0.74)) : colours);
+/** Houses get painted walls, apartment blocks brick or concrete, towers glass. */
+const wallSkin = (night: boolean) => {
+  const n = night ? 'night-' : '';
+  return ['case', tall, numbered(`bs-${n}glass-`, GLASS.length), mid, numbered(`bs-${n}mid-`, MID.length), numbered(`bs-${n}wall-`, N)];
+};
+const wallFlat = (night: boolean) => ['case', tall, list(dusk(GLASS_FAR, night), GLASS_FAR.length), mid, list(dusk(MID, night), MID.length), list(dusk(WALLS, night), N)];
+const roofSkinName = (night: boolean) => numbered(`bs-${night ? 'night-' : ''}roof-`, ROOFS.length);
+const roofFlat = (night: boolean) => list(dusk(ROOFS, night), ROOFS.length);
+
 /** Add everything. Each part is optional, so a missing source leaves the rest working. */
 export function installScene(map: maplibregl.Map) {
   try {
@@ -63,22 +84,21 @@ export function installScene(map: maplibregl.Map) {
       if (!map.hasImage(name)) map.addImage(name, skin, { pixelRatio: SKIN_SCALE });
     };
     // Every third house is wood siding; the rest are stucco.
-    WALLS.forEach((c, i) => add(`bs-wall-${i}`, houseSkin(c, 100 + i, i % 3 === 1)));
-    BRICK.forEach((c, i) => add(`bs-mid-${i}`, brickSkin(c, 200 + i)));
-    add('bs-mid-2', concreteSkin(MID[2], 202));
-    GLASS.forEach((c, i) => add(`bs-glass-${i}`, glassSkin(c, 300 + i)));
-    ROOFS.forEach((c, i) => add(`bs-roof-${i}`, roofSkin(c, 400 + i)));
+    // Each skin is painted twice: by day, and by night with some of its windows lit.
+    for (const night of [false, true]) {
+      const n = night ? 'night-' : '';
+      WALLS.forEach((c, i) => add(`bs-${n}wall-${i}`, houseSkin(c, 100 + i, i % 3 === 1, night)));
+      BRICK.forEach((c, i) => add(`bs-${n}mid-${i}`, brickSkin(c, 200 + i, night)));
+      add(`bs-${n}mid-2`, concreteSkin(MID[2], 202, night));
+      GLASS.forEach((c, i) => add(`bs-${n}glass-${i}`, glassSkin(c, 300 + i, night)));
+      ROOFS.forEach((c, i) => add(`bs-${n}roof-${i}`, roofSkin(c, 400 + i, night)));
+    }
 
     // Heights snap to 3 m storeys so floors line up with the window rows.
     const height = ['*', 3, ['ceil', ['/', ['coalesce', ['get', 'render_height'], 9], 3]]];
     const base = ['coalesce', ['get', 'render_min_height'], 0];
-    const tall = ['>', ['coalesce', ['get', 'render_height'], 9], 42];
-    const mid = ['>', ['coalesce', ['get', 'render_height'], 9], 19];
-    const numbered = (prefix: string, n: number) => ['concat', prefix, ['to-string', pick(n)]];
-    // Houses get painted walls, apartment blocks brick or concrete, towers glass.
-    const skin = ['case', tall, numbered('bs-glass-', GLASS.length), mid, numbered('bs-mid-', MID.length), numbered('bs-wall-', N)];
-    const list = (colours: string[], n: number) => ['match', pick(n), ...colours.slice(0, n - 1).flatMap((c, i) => [i, c]), colours[n - 1]];
-    const flat = ['case', tall, list(GLASS_FAR, GLASS_FAR.length), mid, list(MID, MID.length), list(WALLS, N)];
+    const skin = wallSkin(false);
+    const flat = wallFlat(false);
 
     // From far away any window pattern turns to grey mush, so distant views
     // use plain wall colours and the detail appears as you come closer.
@@ -128,7 +148,7 @@ export function installScene(map: maplibregl.Map) {
         paint: {
           'fill-extrusion-base': height as never,
           'fill-extrusion-height': ['+', height, 0.9] as never,
-          'fill-extrusion-color': list(ROOFS, ROOFS.length) as never,
+          'fill-extrusion-color': roofFlat(false) as never,
           'fill-extrusion-vertical-gradient': false,
         },
       },
@@ -144,7 +164,7 @@ export function installScene(map: maplibregl.Map) {
         paint: {
           'fill-extrusion-base': height as never,
           'fill-extrusion-height': ['+', height, 0.9] as never,
-          'fill-extrusion-pattern': numbered('bs-roof-', ROOFS.length) as never,
+          'fill-extrusion-pattern': roofSkinName(false) as never,
           'fill-extrusion-vertical-gradient': false,
         },
       },
@@ -220,25 +240,77 @@ function footprint(at: LngLat, heading: number, length: number, width: number, s
 }
 
 /** Traffic in the drawn city: each vehicle is a body block with a darker cabin on top. */
-export function drawVehicles(map: maplibregl.Map, vehicles: Vehicle[]) {
+export function drawVehicles(map: maplibregl.Map, vehicles: Vehicle[], night = false) {
   const bodies: Feature[] = [];
   const cabins: Feature[] = [];
+  const lights: Feature[] = [];
+  const tint = (c: string) => (night ? mix(c, NIGHT_INK, 0.62) : c);
+  const point = (at: LngLat, heading: number, along: number, across: number, k: string): Feature => {
+    const rad = Math.PI / 180;
+    const kx = 111320 * Math.cos(at[1] * rad);
+    const fx = Math.sin(heading * rad);
+    const fy = Math.cos(heading * rad);
+    return { type: 'Feature', properties: { k }, geometry: { type: 'Point', coordinates: [at[0] + (along * fx + across * fy) / kx, at[1] + (along * fy - across * fx) / 111320] } };
+  };
   for (const v of vehicles) {
+    if (v.type === 'ferry') {
+      bodies.push({ type: 'Feature', properties: { c: tint('#16263f'), h: 2.4, b: 0 }, geometry: { type: 'Polygon', coordinates: [footprint(v.at, v.heading, 40, 10)] } });
+      cabins.push({ type: 'Feature', properties: { c: night ? '#7d6a48' : '#f1f1ee', h: 7.6, b: 2.4 }, geometry: { type: 'Polygon', coordinates: [footprint(v.at, v.heading, 30, 8.4, -2)] } });
+      if (night) for (const along of [-12, -4, 4, 12]) lights.push(point(v.at, v.heading, along, 0, 'deck'));
+      continue;
+    }
     const cable = v.type === 'cable';
     bodies.push({
       type: 'Feature',
-      properties: { c: cable ? '#6b1217' : CAR_COLOURS[v.paint % CAR_COLOURS.length], h: cable ? 1.3 : 0.9, b: 0.3 },
+      properties: { c: tint(cable ? '#6b1217' : CAR_COLOURS[v.paint % CAR_COLOURS.length]), h: cable ? 1.3 : 0.9, b: 0.3 },
       geometry: { type: 'Polygon', coordinates: [footprint(v.at, v.heading, cable ? 8.4 : 4.4, cable ? 2.4 : 1.8)] },
     });
     cabins.push({
       type: 'Feature',
-      properties: { c: cable ? '#ece0bd' : '#1a2530', h: cable ? 2.9 : 1.45, b: cable ? 1.3 : 0.9 },
+      properties: { c: cable ? (night ? '#b08a4a' : '#ece0bd') : night ? '#0b1018' : '#1a2530', h: cable ? 2.9 : 1.45, b: cable ? 1.3 : 0.9 },
       geometry: { type: 'Polygon', coordinates: [footprint(v.at, v.heading, cable ? 8.6 : 2.4, cable ? 2.5 : 1.6, cable ? 0 : -0.25)] },
     });
+    if (night) {
+      // Headlights throw a pool of light on the road ahead; tail lights glow red behind.
+      const half = cable ? 4.2 : 2.2;
+      lights.push(point(v.at, v.heading, half + 5, 0, 'beam'));
+      lights.push(point(v.at, v.heading, half, -0.6, 'head'), point(v.at, v.heading, half, 0.6, 'head'));
+      lights.push(point(v.at, v.heading, -half, -0.6, 'tail'), point(v.at, v.heading, -half, 0.6, 'tail'));
+    }
   }
   const data = (features: Feature[]): FeatureCollection => ({ type: 'FeatureCollection', features });
   const body = map.getSource('bs-cars') as maplibregl.GeoJSONSource | undefined;
   if (!body) {
+    // Lights lie on the road, so they go under the buildings and are hidden by them.
+    const under = map.getLayer('bs-buildings-far') ? 'bs-buildings-far' : map.getLayer('duel') ? 'duel' : undefined;
+    const metres = (m: number) => ['interpolate', ['exponential', 2], ['zoom'], 13, m * 0.1325, 20, m * 16.95];
+    map.addSource('bs-car-lights', { type: 'geojson', data: data(lights) });
+    map.addLayer(
+      {
+        id: 'bs-car-beams',
+        type: 'circle',
+        source: 'bs-car-lights',
+        minzoom: 14.5,
+        filter: ['==', ['get', 'k'], 'beam'],
+        paint: { 'circle-pitch-alignment': 'map', 'circle-pitch-scale': 'map', 'circle-radius': metres(6.5) as never, 'circle-color': '#fff1c7', 'circle-blur': 1, 'circle-opacity': 0.55 },
+      },
+      under,
+    );
+    map.addLayer(
+      {
+        id: 'bs-car-lamps',
+        type: 'circle',
+        source: 'bs-car-lights',
+        minzoom: 13,
+        filter: ['!=', ['get', 'k'], 'beam'],
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 13, 0.8, 16, 1.4, 19, 3.2],
+          'circle-color': ['match', ['get', 'k'], 'tail', '#ff3a2c', 'deck', '#ffd98a', '#fffbe8'],
+          'circle-blur': 0.35,
+        },
+      },
+      under,
+    );
     const before = map.getLayer('duel') ? 'duel' : undefined;
     for (const [id, features] of [['bs-cars', bodies], ['bs-car-tops', cabins]] as const) {
       map.addSource(id, { type: 'geojson', data: data(features) });
@@ -247,7 +319,7 @@ export function drawVehicles(map: maplibregl.Map, vehicles: Vehicle[]) {
           id,
           type: 'fill-extrusion',
           source: id,
-          minzoom: 14.5,
+          minzoom: 13,
           paint: { 'fill-extrusion-color': ['get', 'c'], 'fill-extrusion-height': ['get', 'h'], 'fill-extrusion-base': ['get', 'b'] },
         },
         before,
@@ -257,8 +329,97 @@ export function drawVehicles(map: maplibregl.Map, vehicles: Vehicle[]) {
   }
   body.setData(data(bodies));
   (map.getSource('bs-car-tops') as maplibregl.GeoJSONSource).setData(data(cabins));
+  (map.getSource('bs-car-lights') as maplibregl.GeoJSONSource | undefined)?.setData(data(lights));
 }
 
+/** One street lamp every 46 metres or so, on alternating sides of the street. */
+const LIT_STREETS = new Set(['primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'pedestrian']);
+/** The Golden Gate Bridge and the western span of the Bay Bridge, for their lights. */
+const BRIDGES: { colour: string; every: number; line: LngLat[] }[] = [
+  { colour: '#ffb070', every: 55, line: [[-122.4752, 37.8079], [-122.4777, 37.8136], [-122.4791, 37.8249], [-122.4804, 37.8322]] },
+  { colour: '#f3f6ff', every: 38, line: [[-122.3884, 37.7873], [-122.3665, 37.8076]] },
+];
+
+function along(lineString: LngLat[], every: number, startAt = every / 2): { at: LngLat; heading: number; n: number }[] {
+  const out: { at: LngLat; heading: number; n: number }[] = [];
+  const rad = Math.PI / 180;
+  let carry = every - startAt;
+  let n = 0;
+  for (let i = 1; i < lineString.length; i++) {
+    const a = lineString[i - 1];
+    const b = lineString[i];
+    const kx = 111320 * Math.cos(a[1] * rad);
+    const dx = (b[0] - a[0]) * kx;
+    const dy = (b[1] - a[1]) * 111320;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.5) continue;
+    let d = every - carry;
+    while (d <= len) {
+      out.push({ at: [a[0] + (dx * (d / len)) / kx, a[1] + (dy * (d / len)) / 111320], heading: Math.atan2(dx, dy) / rad, n: n++ });
+      d += every;
+    }
+    carry = (carry + len) % every;
+  }
+  return out;
+}
+
+/** Street lamps and bridge lights. They only show at night. */
+export function installLights(map: maplibregl.Map, streets: { kind: string; coords: LngLat[] }[]) {
+  if (map.getSource('bs-lamps')) return;
+  const rad = Math.PI / 180;
+  const lamps: Feature[] = [];
+  for (const s of streets) {
+    if (!LIT_STREETS.has(s.kind)) continue;
+    for (const p of along(s.coords, 46)) {
+      const side = p.n % 2 ? 1 : -1;
+      const kx = 111320 * Math.cos(p.at[1] * rad);
+      lamps.push({
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'Point', coordinates: [p.at[0] + (Math.cos(p.heading * rad) * 5.5 * side) / kx, p.at[1] - (Math.sin(p.heading * rad) * 5.5 * side) / 111320] },
+      });
+    }
+  }
+  const bridge: Feature[] = BRIDGES.flatMap((b) => along(b.line, b.every).map((p): Feature => ({ type: 'Feature', properties: { c: b.colour }, geometry: { type: 'Point', coordinates: p.at } })));
+  const under = map.getLayer('bs-buildings-far') ? 'bs-buildings-far' : map.getLayer('duel') ? 'duel' : undefined;
+  const metres = (m: number) => ['interpolate', ['exponential', 2], ['zoom'], 13, m * 0.1325, 20, m * 16.95];
+  map.addSource('bs-lamps', { type: 'geojson', data: { type: 'FeatureCollection', features: lamps } });
+  map.addSource('bs-bridge-lights', { type: 'geojson', data: { type: 'FeatureCollection', features: bridge } });
+  map.addLayer(
+    {
+      id: 'bs-lamp-pools',
+      type: 'circle',
+      source: 'bs-lamps',
+      minzoom: 14,
+      layout: { visibility: 'none' },
+      paint: { 'circle-pitch-alignment': 'map', 'circle-pitch-scale': 'map', 'circle-radius': metres(9) as never, 'circle-color': '#ffc270', 'circle-blur': 1, 'circle-opacity': 0.5 },
+    },
+    under,
+  );
+  map.addLayer(
+    {
+      id: 'bs-lamp-heads',
+      type: 'circle',
+      source: 'bs-lamps',
+      minzoom: 13,
+      layout: { visibility: 'none' },
+      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 13, 0.7, 16, 1.3, 19, 3], 'circle-color': '#fff2cf', 'circle-blur': 0.3 },
+    },
+    under,
+  );
+  map.addLayer(
+    {
+      id: 'bs-bridge-lights',
+      type: 'circle',
+      source: 'bs-bridge-lights',
+      layout: { visibility: 'none' },
+      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 11, 1, 15, 2.2, 18, 4], 'circle-color': ['get', 'c'], 'circle-blur': 0.4 },
+    },
+    under,
+  );
+}
+
+const NIGHT_LAYERS = ['bs-lamp-pools', 'bs-lamp-heads', 'bs-bridge-lights', 'bs-car-beams', 'bs-car-lamps'];
 const SCENE_LAYERS = ['bs-cars', 'bs-car-tops', 'bs-buildings', 'bs-buildings-far', 'bs-roofs', 'bs-roofs-far', 'bs-centerline', 'bs-ground', 'bs-trees', 'bs-trunks'];
 /** The base map's own building layers, which ours replace in 3D. */
 const STYLE_3D = ['building-3d'];
@@ -344,10 +505,12 @@ function realGround(map: maplibregl.Map): [string, string, unknown][] {
 /** The base map's own colours, remembered so the flat map can have them back. */
 const originals = new WeakMap<maplibregl.Map, [string, string, unknown][]>();
 
-function paintGround(map: maplibregl.Map, real: boolean) {
+function paintGround(map: maplibregl.Map, real: boolean, night: boolean) {
   const wanted = realGround(map);
   if (!originals.has(map)) originals.set(map, wanted.map(([id, prop]) => [id, prop, map.getPaintProperty(id, prop as never)]));
-  for (const [id, prop, value] of real ? wanted : originals.get(map)!) {
+  // By night the same ground, sunk most of the way into dark blue; the water goes darkest.
+  const shown = night ? wanted.map(([id, prop, value]): [string, string, unknown] => [id, prop, value === '#5f9cc0' ? '#0c1830' : mix(value as string, NIGHT_INK, 0.72)]) : wanted;
+  for (const [id, prop, value] of real ? shown : originals.get(map)!) {
     try {
       map.setPaintProperty(id, prop as never, value as never);
     } catch {
@@ -356,10 +519,31 @@ function paintGround(map: maplibregl.Map, real: boolean) {
   }
 }
 
-export function setSceneMode(map: maplibregl.Map, on: boolean, scores = false) {
+export function setSceneMode(map: maplibregl.Map, on: boolean, scores = false, night = false) {
   dressBaseMap(map);
   // White roads belong on a map, not in a view of the city, so 3D repaints the ground.
-  paintGround(map, on);
+  paintGround(map, on, night);
+  const dark = on && night;
+  const paint = (id: string, prop: string, value: unknown) => {
+    try {
+      if (map.getLayer(id)) map.setPaintProperty(id, prop as never, value as never);
+    } catch {
+      /* decoration */
+    }
+  };
+  // Night swaps every building onto its lamplit skin and brings out the lights.
+  paint('bs-buildings', 'fill-extrusion-pattern', wallSkin(dark));
+  paint('bs-buildings-far', 'fill-extrusion-color', wallFlat(dark));
+  paint('bs-roofs', 'fill-extrusion-pattern', roofSkinName(dark));
+  paint('bs-roofs-far', 'fill-extrusion-color', roofFlat(dark));
+  paint('bs-ground', 'fill-extrusion-color', dark ? '#3b3026' : '#6f6a64');
+  paint('bs-trunks', 'fill-extrusion-color', dark ? '#1c1612' : '#6b4a32');
+  paint('bs-trees', 'fill-extrusion-color', ['match', ['get', 'v'], ...(dark ? [0, '#142a22', 1, '#18301f', 2, '#10241d', '#1c3323'] : [0, '#3f8a4c', 1, '#56a25a', 2, '#2f7446', '#7ab567'])]);
+  paint('bs-centerline', 'line-color', dark ? '#6b5a2a' : '#d8b648');
+  paint('bs-relief', 'hillshade-highlight-color', dark ? '#1a2444' : '#fff6e0');
+  paint('bs-relief', 'hillshade-shadow-color', dark ? '#04060d' : '#3b4a5a');
+  paint('bs-relief', 'hillshade-accent-color', dark ? '#0b1022' : '#5a6b5a');
+  for (const id of NIGHT_LAYERS) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', dark ? 'visible' : 'none');
   // In 3D the picture leads: no labels, and street scores only when asked for.
   // Flat is the working map, with both.
   for (const layer of map.getStyle().layers ?? []) {
@@ -392,16 +576,10 @@ export interface Sun {
   cloud: number;
 }
 
-const mix = (a: string, b: string, t: number) => {
-  const p = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
-  const [x, y] = [p(a), p(b)];
-  return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * Math.max(0, Math.min(1, t))).toString(16).padStart(2, '0')).join('');
-};
-
 /** Sky colours for the sun's height: night, a warm band around sunrise and sunset, then day. */
 export function skyColors(sun: Sun): { sky: string; horizon: string; fog: string; phase: 'night' | 'golden' | 'day' } {
   const grey = sun.cloud / 100;
-  if (sun.altitude < -6) return { sky: '#0b1430', horizon: '#1b2647', fog: '#141c33', phase: 'night' };
+  if (sun.altitude < -6) return { sky: '#060b1f', horizon: '#18233f', fog: '#0f1730', phase: 'night' };
   if (sun.altitude < 8) {
     const t = (sun.altitude + 6) / 14; // dusk -> low sun
     return {
@@ -428,8 +606,9 @@ export function applySun(map: maplibregl.Map, sun: Sun) {
       anchor: 'map',
       // [distance, azimuth, polar angle from straight overhead]
       position: [1.5, sun.azimuth, 90 - up],
-      color: c.phase === 'night' ? '#8fa3d9' : c.phase === 'golden' ? '#ffd2a1' : '#fff6e6',
-      intensity: c.phase === 'night' ? 0.25 : 0.35 + 0.3 * (1 - sun.cloud / 100),
+      // The night skins carry their own darkness and lamplight, so night light is even and white.
+      color: c.phase === 'night' ? '#ffffff' : c.phase === 'golden' ? '#ffd2a1' : '#fff6e6',
+      intensity: c.phase === 'night' ? 0.12 : 0.35 + 0.3 * (1 - sun.cloud / 100),
     });
   } catch {
     /* lighting is decoration */
