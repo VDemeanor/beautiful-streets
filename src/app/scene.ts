@@ -2,6 +2,7 @@ import * as maplibregl from 'maplibre-gl';
 import type { Feature, FeatureCollection } from 'geojson';
 import type { LngLat } from '@/lib/types';
 import { brickSkin, concreteSkin, glassSkin, houseSkin, roofSkin, SKIN_SCALE } from './textures';
+import type { Vehicle } from './traffic';
 
 /**
  * The 3D scene: terrain, painted buildings with windows and roofs, block trees,
@@ -201,7 +202,64 @@ export function installTrees(map: maplibregl.Map, trees: LngLat[]) {
   );
 }
 
-const SCENE_LAYERS = ['bs-buildings', 'bs-buildings-far', 'bs-roofs', 'bs-roofs-far', 'bs-centerline', 'bs-ground', 'bs-trees', 'bs-trunks'];
+const CAR_COLOURS = ['#ededeb', '#b3b8bd', '#151517', '#545c66', '#213866', '#8c1714'];
+
+/** A rectangle on the ground, centred on a point and turned to a compass heading. */
+function footprint(at: LngLat, heading: number, length: number, width: number, shift = 0): number[][] {
+  const rad = Math.PI / 180;
+  const kx = 111320 * Math.cos(at[1] * rad);
+  const fx = Math.sin(heading * rad);
+  const fy = Math.cos(heading * rad);
+  const corner = (along: number, across: number) => [
+    at[0] + ((along + shift) * fx + across * fy) / kx,
+    at[1] + ((along + shift) * fy - across * fx) / 111320,
+  ];
+  const l = length / 2;
+  const w = width / 2;
+  return [corner(l, -w), corner(l, w), corner(-l, w), corner(-l, -w), corner(l, -w)];
+}
+
+/** Traffic in the drawn city: each vehicle is a body block with a darker cabin on top. */
+export function drawVehicles(map: maplibregl.Map, vehicles: Vehicle[]) {
+  const bodies: Feature[] = [];
+  const cabins: Feature[] = [];
+  for (const v of vehicles) {
+    const cable = v.type === 'cable';
+    bodies.push({
+      type: 'Feature',
+      properties: { c: cable ? '#6b1217' : CAR_COLOURS[v.paint % CAR_COLOURS.length], h: cable ? 1.3 : 0.9, b: 0.3 },
+      geometry: { type: 'Polygon', coordinates: [footprint(v.at, v.heading, cable ? 8.4 : 4.4, cable ? 2.4 : 1.8)] },
+    });
+    cabins.push({
+      type: 'Feature',
+      properties: { c: cable ? '#ece0bd' : '#1a2530', h: cable ? 2.9 : 1.45, b: cable ? 1.3 : 0.9 },
+      geometry: { type: 'Polygon', coordinates: [footprint(v.at, v.heading, cable ? 8.6 : 2.4, cable ? 2.5 : 1.6, cable ? 0 : -0.25)] },
+    });
+  }
+  const data = (features: Feature[]): FeatureCollection => ({ type: 'FeatureCollection', features });
+  const body = map.getSource('bs-cars') as maplibregl.GeoJSONSource | undefined;
+  if (!body) {
+    const before = map.getLayer('duel') ? 'duel' : undefined;
+    for (const [id, features] of [['bs-cars', bodies], ['bs-car-tops', cabins]] as const) {
+      map.addSource(id, { type: 'geojson', data: data(features) });
+      map.addLayer(
+        {
+          id,
+          type: 'fill-extrusion',
+          source: id,
+          minzoom: 14.5,
+          paint: { 'fill-extrusion-color': ['get', 'c'], 'fill-extrusion-height': ['get', 'h'], 'fill-extrusion-base': ['get', 'b'] },
+        },
+        before,
+      );
+    }
+    return;
+  }
+  body.setData(data(bodies));
+  (map.getSource('bs-car-tops') as maplibregl.GeoJSONSource).setData(data(cabins));
+}
+
+const SCENE_LAYERS = ['bs-cars', 'bs-car-tops', 'bs-buildings', 'bs-buildings-far', 'bs-roofs', 'bs-roofs-far', 'bs-centerline', 'bs-ground', 'bs-trees', 'bs-trunks'];
 /** The base map's own building layers, which ours replace in 3D. */
 const STYLE_3D = ['building-3d'];
 const STYLE_FLAT = ['building'];

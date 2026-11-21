@@ -9,12 +9,15 @@ import { haversine } from '@/lib/geo';
 import { startBirds } from './birds';
 import { Flight, mapStage, RIGS, type FlightState } from './flight';
 import Photoreal, { type PhotorealApi } from './Photoreal';
-import { applySun, CAMERA_3D, installScene, installTrees, setSceneMode, sunOnScreen, type Sun } from './scene';
+import { Traffic } from './traffic';
+import WeatherLayer from './Weather';
+import { applySun, CAMERA_3D, drawVehicles, installScene, installTrees, setSceneMode, sunOnScreen, type Sun } from './scene';
 import type { LngLat, Route, RouteLeg, Side, WalkContext } from '@/lib/types';
 
 interface MapBlock {
   id: string;
   name: string;
+  kind: string;
   coords: LngLat[];
   len: number;
   bearing: number;
@@ -34,6 +37,15 @@ interface Card {
   coords: LngLat[];
 }
 type Tab = 'walk' | 'vote' | 'rank';
+
+type Mood = 'balanced' | 'views' | 'quiet' | 'lively';
+/** What each mood asks of the four beauty scores: views, greenery, architecture, street life. */
+const MOODS: { id: Mood; label: string; hint: string; weights: [number, number, number, number] }[] = [
+  { id: 'balanced', label: 'A bit of everything', hint: 'The best all-round streets', weights: [1, 1, 1, 1] },
+  { id: 'views', label: 'Views', hint: 'Hilltops, stairways and the bay', weights: [2.2, 0.8, 1, 0.4] },
+  { id: 'quiet', label: 'Quiet and green', hint: 'Trees, gardens, little traffic', weights: [0.8, 2.2, 1, 0.15] },
+  { id: 'lively', label: 'Lively', hint: 'Cafes, shopfronts, people', weights: [0.5, 0.5, 1, 2.2] },
+];
 
 const DIM_LABELS = ['Views and stairways', 'Trees and gardens', 'Architecture', 'People and energy'] as const;
 const DIM_KEYS = ['views', 'green', 'arch', 'energy'] as const;
@@ -115,7 +127,15 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
   const [start, setStart] = useState<LngLat | null>(null);
   const [minutes, setMinutes] = useState(45);
   const [when, setWhen] = useState('');
-  const [weights, setWeights] = useState<number[]>([1, 1, 1, 1]);
+  // The few choices that really change a walk. Remembered between visits.
+  const [mood, setMood] = useState<Mood>('balanced');
+  const [hills, setHills] = useState<'avoid' | 'ok' | 'seek'>('ok');
+  const [noStairs, setNoStairs] = useState(false);
+  const [startLabel, setStartLabel] = useState('');
+  const [query, setQuery] = useState('');
+  const [places, setPlaces] = useState<{ label: string; at: LngLat }[]>([]);
+  const [nowCtx, setNowCtx] = useState<WalkContext | null>(null);
+  const prefsLoaded = useRef(false);
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState('');
   const [plan, setPlan] = useState<{ route: Route; ctx: WalkContext } | null>(null);
@@ -292,6 +312,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
       startMarker.current.on('dragend', () => {
         const p = startMarker.current!.getLngLat();
         setStart([p.lng, p.lat]);
+        setStartLabel('the dropped pin');
       });
     } else startMarker.current.setLngLat(start);
   }, [mapReady, start]);
@@ -377,6 +398,135 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     }
   }, [mapReady, tab, duel]);
 
+  // Remember the walker's choices and starting point between visits.
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem('bs.prefs') ?? 'null');
+      if (saved) {
+        if (MOODS.some((m) => m.id === saved.mood)) setMood(saved.mood);
+        if (['avoid', 'ok', 'seek'].includes(saved.hills)) setHills(saved.hills);
+        setNoStairs(saved.noStairs === true);
+        if (saved.minutes >= 15 && saved.minutes <= 120) setMinutes(saved.minutes);
+        if (Array.isArray(saved.start) && saved.start.length === 2) {
+          setStart(saved.start);
+          setStartLabel(typeof saved.startLabel === 'string' ? saved.startLabel : '');
+        }
+      }
+    } catch {
+      /* nothing saved, or storage unavailable */
+    }
+    prefsLoaded.current = true;
+  }, []);
+  useEffect(() => {
+    if (!prefsLoaded.current) return;
+    try {
+      window.localStorage.setItem('bs.prefs', JSON.stringify({ mood, hills, noStairs, minutes, start, startLabel }));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [mood, hills, noStairs, minutes, start, startLabel]);
+
+  // Conditions right now at the start, so the scene shows today's weather before a walk is designed.
+  const startKey = start ? `${start[0].toFixed(3)},${start[1].toFixed(3)}` : '';
+  useEffect(() => {
+    if (!start) return;
+    let stale = false;
+    fetch(`/api/weather?lng=${start[0].toFixed(4)}&lat=${start[1].toFixed(4)}`)
+      .then((r) => r.json())
+      .then((j: { ctx?: WalkContext }) => {
+        if (!stale && j.ctx) setNowCtx(j.ctx);
+      })
+      .catch(() => undefined);
+    return () => {
+      stale = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startKey]);
+
+  // Look up places as the walker types a starting point.
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 3) {
+      setPlaces([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      // Photon is OpenStreetMap's free place search; results are limited to the map's area.
+      fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=5&lat=37.8&lon=-122.42&bbox=-122.447,37.787,-122.4,37.811`)
+        .then((r) => r.json())
+        .then((j: { features?: { geometry: { coordinates: [number, number] }; properties: Record<string, string> }[] }) => {
+          setPlaces(
+            (j.features ?? []).map((f) => {
+              const p = f.properties;
+              const line = [p.name, [p.housenumber, p.street].filter(Boolean).join(' ')].filter(Boolean);
+              return { label: [...new Set(line)].join(', ') || p.street || 'Unnamed place', at: f.geometry.coordinates };
+            }),
+          );
+        })
+        .catch(() => setPlaces([]));
+    }, 280);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  /** Move the start of the walk, and the camera with it. */
+  const startAt = (at: LngLat, label: string) => {
+    setStart(at);
+    setStartLabel(label);
+    setQuery('');
+    setPlaces([]);
+    setPlan(null);
+    mapRef.current?.easeTo({ center: at, zoom: Math.max(mapRef.current.getZoom(), 15.6), duration: 900 });
+    realApi.current?.frame({ center: at, zoom: 15.8 }, CAMERA_3D.pitch, CAMERA_3D.bearing);
+  };
+
+  const locateMe = () => {
+    if (!navigator.geolocation) {
+      setToast('This browser cannot share its location.');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const at: LngLat = [pos.coords.longitude, pos.coords.latitude];
+        // Outside the mapped neighbourhoods there are no streets to plan on.
+        if (at[0] < -122.447 || at[0] > -122.4 || at[1] < 37.787 || at[1] > 37.811) {
+          setToast('You are outside the area this version covers: Russian Hill and its neighbours.');
+          return;
+        }
+        startAt(at, 'My location');
+      },
+      () => setToast('Location was not shared. Search for a place or drag the pin instead.'),
+      { enableHighAccuracy: true, timeout: 8000 },
+    );
+  };
+
+  // Street life: cars and the Hyde Street cable car, around wherever the camera is looking.
+  const traffic = useMemo(() => (blocks.length ? new Traffic(blocks.map((b) => ({ name: b.name, kind: b.kind, coords: b.coords }))) : null), [blocks]);
+  useEffect(() => {
+    if (!mapReady || !traffic || !threeD || calm()) return;
+    const map = mapRef.current!;
+    let raf = 0;
+    let last = performance.now();
+    let drawn = 0;
+    const frame = (now: number) => {
+      const dt = Math.min((now - last) / 1000, 0.1);
+      last = now;
+      const api = real ? realApi.current : null;
+      const c = map.getCenter();
+      const focus: LngLat = api ? api.stage.current().look : [c.lng, c.lat];
+      const vehicles = traffic.step(dt, focus);
+      // The real city redraws models, which is heavier, so it updates a little less often.
+      if (now - drawn > (api ? 50 : 33)) {
+        drawn = now;
+        if (api) api.vehicles(vehicles);
+        else if (!real && map.getZoom() > 14.4) drawVehicles(map, vehicles);
+      }
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, traffic, threeD, real, realReady]);
+
   // Gulls over the city, in 3D only.
   useEffect(() => {
     if (!mapReady || !threeD || !birdsEl.current || calm()) return;
@@ -391,10 +541,11 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
   // Where the sun is: at the walk's start time once a walk is designed, otherwise now.
   const sun: Sun = useMemo(() => {
     if (plan) return { azimuth: plan.ctx.sunAzimuth, altitude: plan.ctx.sunAltitude, cloud: plan.ctx.weather?.cloudPct ?? 20 };
+    if (nowCtx) return { azimuth: nowCtx.sunAzimuth, altitude: nowCtx.sunAltitude, cloud: nowCtx.weather?.cloudPct ?? 20 };
     const at = start ?? [-122.4194, 37.8021];
     const pos = SunCalc.getPosition(new Date(), at[1], at[0]);
     return { azimuth: pos.azimuth, altitude: pos.altitude, cloud: 20 };
-  }, [plan, start]);
+  }, [plan, start, nowCtx]);
 
   // Light the scene from the sun and keep the sun disc in the right spot of the sky.
   useEffect(() => {
@@ -642,8 +793,9 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     setStars({});
     setSidePick({});
     try {
+      const weights = MOODS.find((m) => m.id === mood)!.weights;
       const weightsObj = Object.fromEntries(DIM_KEYS.map((k, i) => [k, weights[i]]));
-      setPlan(await api('/api/plan', { start, minutes, weights: weightsObj, when: when ? new Date(when).toISOString() : undefined }));
+      setPlan(await api('/api/plan', { start, minutes, weights: weightsObj, hills, noStairs, when: when ? new Date(when).toISOString() : undefined }));
     } catch (err) {
       setPlan(null);
       setPlanError(err instanceof Error ? err.message : String(err));
@@ -755,6 +907,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
           </form>
         )}
         <canvas ref={birdsEl} className="birds" aria-hidden="true" />
+        {threeD && <WeatherLayer weather={plan?.ctx.weather ?? nowCtx?.weather ?? null} night={skyPhase === 'night'} quiet={calm()} />}
         {threeD && <div className="grade" aria-hidden="true" />}
         {film && <div className="bars" aria-hidden="true" />}
         {film && film.cuts > 0 && <div key={`cut-${film.cuts}`} className="cut" aria-hidden="true" />}
@@ -881,23 +1034,57 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
             <>
               {!route && (
                 <>
+                  <div className="field place">
+                    <label htmlFor="start">Start from</label>
+                    <div className="row">
+                      <input
+                        id="start"
+                        type="text"
+                        value={query}
+                        placeholder={startLabel || 'An address, cafe or corner'}
+                        onChange={(e) => setQuery(e.target.value)}
+                        autoComplete="off"
+                      />
+                      <button type="button" className="btn small" onClick={locateMe}>My location</button>
+                    </div>
+                    {places.length > 0 && (
+                      <ul className="places">
+                        {places.map((p, i) => (
+                          <li key={`${p.label}-${i}`}>
+                            <button type="button" onClick={() => startAt(p.at, p.label)}>{p.label}</button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <span className="muted">{startLabel ? `Starting at ${startLabel}. ` : ''}You can also drag the gem on the map.</span>
+                  </div>
                   <div className="field">
                     <label htmlFor="minutes">How long: {minutes} minutes</label>
                     <input id="minutes" type="range" min={15} max={120} step={5} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} />
                   </div>
                   <div className="field">
-                    <label htmlFor="when">When (leave empty for now)</label>
-                    <input id="when" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
-                  </div>
-                  <div className="field">
-                    <span className="label">What matters on this walk</span>
-                    <div className="weights">
-                      {DIM_LABELS.map((label, i) => (
-                        <FragmentWeight key={label} label={label} value={weights[i]} onChange={(v) => setWeights((w) => w.map((x, j) => (j === i ? v : x)))} />
+                    <span className="label">In the mood for</span>
+                    <div className="chips" role="radiogroup" aria-label="Mood">
+                      {MOODS.map((m) => (
+                        <button key={m.id} type="button" role="radio" aria-checked={mood === m.id} title={m.hint} className="chip" onClick={() => setMood(m.id)}>{m.label}</button>
                       ))}
                     </div>
                   </div>
-                  <p className="muted">The walk starts and ends at the black pin. Drag it, or tap a street and choose "Start my walk here".</p>
+                  <div className="field">
+                    <span className="label">Hills</span>
+                    <div className="chips" role="radiogroup" aria-label="Hills">
+                      {([['avoid', 'Keep it gentle'], ['ok', 'As they come'], ['seek', 'Give me a climb']] as const).map(([id, label]) => (
+                        <button key={id} type="button" role="radio" aria-checked={hills === id} className="chip" onClick={() => setHills(id)}>{label}</button>
+                      ))}
+                    </div>
+                    <label className="check">
+                      <input type="checkbox" checked={noStairs} onChange={(e) => setNoStairs(e.target.checked)} /> No stairways
+                    </label>
+                  </div>
+                  <div className="field">
+                    <label htmlFor="when">Leaving (empty means now)</label>
+                    <input id="when" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
+                  </div>
                   {planError && <p className="error">{planError}</p>}
                   <button className="btn primary" disabled={planning || !start || !blocks.length} onClick={designWalk}>
                     {planning ? 'Designing…' : 'Design my walk'}
@@ -1023,16 +1210,6 @@ function FragmentRow({ label, value }: { label: string; value: number }) {
     <>
       <span>{label}</span>
       <i style={{ width: `${Math.round(value * 100)}%` }} />
-    </>
-  );
-}
-
-function FragmentWeight({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
-  const id = `w-${label.replace(/\W+/g, '-')}`;
-  return (
-    <>
-      <label htmlFor={id}>{label}</label>
-      <input id={id} type="range" min={0} max={2} step={0.25} value={value} onChange={(e) => onChange(Number(e.target.value))} />
     </>
   );
 }

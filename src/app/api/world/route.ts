@@ -16,6 +16,7 @@ export async function GET() {
       return {
         id: b.id,
         name: b.name,
+        kind: b.highway,
         coords: b.coords.map((p) => [r6(p[0]), r6(p[1])]),
         len: Math.round(b.len),
         bearing: Math.round(b.bearing),

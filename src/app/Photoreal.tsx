@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LngLat, RouteLeg } from '@/lib/types';
 import { cameraDistance, NORMAL_LENS, type Shot, type Stage } from './flight';
+import type { Vehicle } from './traffic';
 
 /**
  * The real city: Google's photorealistic 3D Maps, with real facades, roofs and
@@ -17,6 +18,8 @@ export interface PhotorealApi {
   frame(view: { center: LngLat; zoom: number }, pitch: number, bearing: number): void;
   /** Rotate or tilt by hand. */
   nudge(bearing: number, pitch: number): void;
+  /** Show these vehicles, moving the 3D models already placed and adding or removing as needed. */
+  vehicles(list: Vehicle[]): void;
   /** Mark the next turn with the name of the street to take, or clear it with null. */
   nextTurn(at: LngLat | null, label?: string): void;
 }
@@ -139,6 +142,8 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
   useEffect(() => {
     let cancelled = false;
     let walker: any = null;
+    const fleet = new Map<number, any>();
+    let fleetWarned = false;
     loadMaps3d(apiKey)
       .then((lib) => {
         if (cancelled || !host.current) return;
@@ -250,6 +255,41 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
               put(end);
             }
           },
+          vehicles(list) {
+            try {
+              // How the models sit in Google's scene; adjustable while tuning.
+              const tune = (window as any).__bsCarTune ?? { heading: 0, tilt: 270, roll: 0 };
+              const seen = new Set<number>();
+              for (const v of list) {
+                seen.add(v.id);
+                const position = { lat: v.at[1], lng: v.at[0], altitude: 0 };
+                const orientation = { heading: (v.heading + tune.heading + 360) % 360, tilt: tune.tilt, roll: tune.roll };
+                let model = fleet.get(v.id);
+                if (!model) {
+                  model = new lib.Model3DElement({
+                    src: v.type === 'cable' ? '/models/cable-car.glb' : `/models/car-${v.paint}.glb`,
+                    position,
+                    orientation,
+                    altitudeMode: 'CLAMP_TO_GROUND',
+                    scale: 1,
+                  });
+                  map.append(model);
+                  fleet.set(v.id, model);
+                } else {
+                  model.position = position;
+                  model.orientation = orientation;
+                }
+              }
+              for (const [id, model] of fleet) {
+                if (seen.has(id)) continue;
+                model.remove();
+                fleet.delete(id);
+              }
+            } catch (err) {
+              if (!fleetWarned) console.warn('[beautiful-streets] traffic failed', err);
+              fleetWarned = true;
+            }
+          },
           nextTurn(at, label) {
             try {
               if (!at) {
@@ -281,6 +321,8 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
     return () => {
       cancelled = true;
       walker?.remove();
+      for (const model of fleet.values()) model.remove();
+      fleet.clear();
       turnRef.current?.remove();
       turnRef.current = null;
       mapRef.current?.remove();

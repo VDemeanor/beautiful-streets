@@ -200,3 +200,30 @@ describe('route design', () => {
     expect(new Set(sides.map((s) => s.side)).size).toBe(1);
   });
 });
+
+describe('walk preferences', () => {
+  const blocks = demoBlocks();
+  const graph = buildGraph(blocks);
+  const base = { blocks, graph, community: new Map<string, Community>(), start: graph.pos.get('d2_2')!, minutes: 40, weights: DEFAULT_WEIGHTS, ctx: ctx() };
+  const steepShare = (legs: { blockId: string; len: number }[]) => {
+    const byId = new Map(blocks.map((b) => [b.id, b]));
+    let steep = 0;
+    let all = 0;
+    for (const l of legs) {
+      all += l.len;
+      if (Math.abs(byId.get(l.blockId)!.grade) > 0.07) steep += l.len;
+    }
+    return steep / all;
+  };
+  it('routes around steep blocks when asked to avoid hills', () => {
+    const normal = designWalk(base)!;
+    const gentle = designWalk({ ...base, hills: 'avoid' })!;
+    expect(steepShare(gentle.legs)).toBeLessThanOrEqual(steepShare(normal.legs));
+    expect(gentle.climbM).toBeLessThanOrEqual(normal.climbM + 1);
+  });
+  it('climbs more when asked for hills', () => {
+    const gentle = designWalk({ ...base, hills: 'avoid' })!;
+    const climb = designWalk({ ...base, hills: 'seek' })!;
+    expect(climb.climbM).toBeGreaterThanOrEqual(gentle.climbM);
+  });
+});

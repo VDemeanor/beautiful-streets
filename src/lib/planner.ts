@@ -1,5 +1,5 @@
 import { cardinal } from './geo';
-import { buildGraph, nearestNode, planLoop, type Graph, type Traversal } from './router';
+import { buildGraph, nearestNode, planLoop, type CostFn, type Graph, type Traversal } from './router';
 import { contextPenalty, contextWeights, finalScore, sideNormal, sideScore } from './scoring';
 import type { Block, Community, LngLat, Route, RouteLeg, RouteStep, Side, WalkContext, Weights } from './types';
 
@@ -63,6 +63,10 @@ export interface PlanInput {
   minutes: number;
   weights: Weights;
   ctx: WalkContext;
+  /** avoid: route around steep blocks. seek: prefer a climb. Default takes hills as they come. */
+  hills?: 'avoid' | 'ok' | 'seek';
+  /** Keep off stairways. */
+  noStairs?: boolean;
 }
 
 export function designWalk(input: PlanInput): Route | null {
@@ -94,13 +98,23 @@ export function designWalk(input: PlanInput): Route | null {
     }
     return len / PACE_M_PER_MIN + climb / 10;
   };
+  const hills = input.hills ?? 'ok';
+  const extra: CostFn = (block, forward) => {
+    let k = 1;
+    if (input.noStairs && block.highway === 'steps') k *= 12;
+    const grade = Math.abs(block.grade);
+    // A 7% street is where most people start to notice; San Francisco goes far beyond that.
+    if (hills === 'avoid' && grade > 0.07) k *= 1 + (grade - 0.07) * 40;
+    if (hills === 'seek' && (forward ? block.grade : -block.grade) > 0.06) k *= 0.7;
+    return k;
+  };
   let targetM = input.minutes * PACE_M_PER_MIN;
-  let loop = planLoop(graph, start, targetM, score);
+  let loop = planLoop(graph, start, targetM, score, extra);
   // If the streets around the start cannot hold a loop this long, offer the
   // longest one that fits rather than nothing.
   for (let i = 0; !loop && i < 4; i++) {
     targetM *= 0.8;
-    loop = planLoop(graph, start, targetM, score);
+    loop = planLoop(graph, start, targetM, score, extra);
   }
   if (!loop) return null;
   const wanted = Math.min(input.minutes, (targetM / PACE_M_PER_MIN) * 1.05);
@@ -108,7 +122,7 @@ export function designWalk(input: PlanInput): Route | null {
     const ratio = wanted / timeOf(loop.path);
     if (Math.abs(ratio - 1) < 0.08) break;
     targetM *= ratio;
-    const retry = planLoop(graph, start, targetM, score);
+    const retry = planLoop(graph, start, targetM, score, extra);
     if (!retry) break;
     if (Math.abs(timeOf(retry.path) - wanted) < Math.abs(timeOf(loop.path) - wanted)) loop = retry;
   }

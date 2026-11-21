@@ -10,6 +10,8 @@ export async function POST(req: Request) {
     minutes?: unknown;
     weights?: Record<string, unknown>;
     when?: unknown;
+    hills?: unknown;
+    noStairs?: unknown;
   } | null;
   const start = body?.start;
   if (!Array.isArray(start) || start.length !== 2 || !start.every((n) => typeof n === 'number' && Number.isFinite(n)))
@@ -35,6 +37,8 @@ export async function POST(req: Request) {
     minutes,
     weights,
     ctx,
+    hills: body?.hills === 'avoid' || body?.hills === 'seek' ? body.hills : 'ok',
+    noStairs: body?.noStairs === true,
   });
   if (!route) return bad('No loop of that length fits from there. Try a longer walk or a start nearer the middle of the map.');
   return Response.json({ route, ctx });

@@ -121,16 +121,20 @@ interface Tree {
 export type ScoreFn = (block: Block) => number;
 
 /** Walking a metre of a beautiful block "costs" far less than a metre of a dull one. */
-function edgeCost(e: Edge, score: ScoreFn, used: Set<string> | null): number {
+/** Multiplies the cost of walking a block in a given direction; 1 leaves it unchanged. */
+export type CostFn = (block: Block, forward: boolean) => number;
+
+function edgeCost(e: Edge, score: ScoreFn, used: Set<string> | null, extra?: CostFn): number {
   const s = Math.max(0, Math.min(1, score(e.block)));
   let c = e.block.len * (0.4 + 1.6 * (1 - s));
   const grade = e.forward ? e.block.grade : -e.block.grade;
   if (grade > 0.08) c *= 1.15;
   if (used?.has(e.block.id)) c *= 4;
+  if (extra) c *= extra(e.block, e.forward);
   return c;
 }
 
-function dijkstra(g: Graph, source: string, score: ScoreFn, used: Set<string> | null, maxLen: number): Tree {
+function dijkstra(g: Graph, source: string, score: ScoreFn, used: Set<string> | null, maxLen: number, extra?: CostFn): Tree {
   const cost = new Map<string, number>([[source, 0]]);
   const len = new Map<string, number>([[source, 0]]);
   const prev = new Map<string, { from: string; edge: Edge }>();
@@ -145,7 +149,7 @@ function dijkstra(g: Graph, source: string, score: ScoreFn, used: Set<string> | 
     if (nLen > maxLen) continue;
     for (const e of g.adj.get(n) ?? []) {
       if (done.has(e.to)) continue;
-      const nc = c + edgeCost(e, score, used);
+      const nc = c + edgeCost(e, score, used, extra);
       if (nc < (cost.get(e.to) ?? Infinity)) {
         cost.set(e.to, nc);
         len.set(e.to, nLen + e.block.len);
@@ -202,11 +206,11 @@ function evaluate(path: Traversal[], score: ScoreFn, targetM: number): LoopResul
  * most beautiful path, and later legs are steered away from blocks already used.
  * The best triangle by beauty, length fit and lack of backtracking wins.
  */
-export function planLoop(g: Graph, start: string, targetM: number, score: ScoreFn): LoopResult | null {
+export function planLoop(g: Graph, start: string, targetM: number, score: ScoreFn, extra?: CostFn): LoopResult | null {
   const origin = g.pos.get(start);
   if (!origin) return null;
   const reach = targetM * 0.75;
-  const first = dijkstra(g, start, score, null, reach);
+  const first = dijkstra(g, start, score, null, reach, extra);
 
   const pickBySector = (tree: Tree, ok: (id: string, len: number) => boolean, sectors: number, perSector: number) => {
     const buckets = new Map<number, { id: string; q: number }[]>();
@@ -239,7 +243,7 @@ export function planLoop(g: Graph, start: string, targetM: number, score: ScoreF
     for (const a of as) {
       const leg1 = pathTo(first, a);
       const used1 = new Set(leg1.map((t) => t.block.id));
-      const second = dijkstra(g, a, score, used1, reach);
+      const second = dijkstra(g, a, score, used1, reach, extra);
       const bearingA = bearing(origin, g.pos.get(a)!);
       const bs = pickBySector(
         second,
@@ -258,7 +262,7 @@ export function planLoop(g: Graph, start: string, targetM: number, score: ScoreF
         const leg2 = pathTo(second, b);
         const used2 = new Set(used1);
         for (const t of leg2) used2.add(t.block.id);
-        const third = dijkstra(g, b, score, used2, reach);
+        const third = dijkstra(g, b, score, used2, reach, extra);
         if (!third.len.has(start)) continue;
         const candidate = evaluate([...leg1, ...leg2, ...pathTo(third, start)], score, targetM);
         if (!best || candidate.objective > best.objective) best = candidate;
