@@ -257,8 +257,9 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
           },
           vehicles(list) {
             try {
-              // How the models sit in Google's scene; adjustable while tuning.
-              const tune = (window as any).__bsCarTune ?? { heading: 0, tilt: 270, roll: 0 };
+              // How the models sit in Google's scene. They are built Y-up facing +Z, so they
+              // are tipped upright (tilt 270) and turned to face the way they travel.
+              const tune = (window as any).__bsCarTune ?? { heading: 180, tilt: 270, roll: 0 };
               const seen = new Set<number>();
               for (const v of list) {
                 seen.add(v.id);
@@ -270,7 +271,9 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
                     src: v.type === 'cable' ? '/models/cable-car.glb' : `/models/car-${v.paint}.glb`,
                     position,
                     orientation,
-                    altitudeMode: 'CLAMP_TO_GROUND',
+                    // The photographed street surface sits a little above the plain terrain,
+                    // which would bury a ground-clamped car, so vehicles ride on the mesh.
+                    altitudeMode: 'RELATIVE_TO_MESH',
                     scale: 1,
                   });
                   map.append(model);
