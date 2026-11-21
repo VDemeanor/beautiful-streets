@@ -320,6 +320,8 @@ input[type='text'], input[type='datetime-local'] {
 /* The photoreal city sits over the drawn one; the film overlays stay on top of both. */
 .photoreal { position: absolute; inset: 0; z-index: 1; background: #0b1220; }
 .map.real .birds, .map.real .sun, .map.real .maplibregl-ctrl-top-right, .map.real .maplibregl-ctrl-bottom-right { display: none; }
+/* Google's logo and credits must stay visible, so the controls sit above them here. */
+.map.real .dock { bottom: 40px; }
 .key-card { z-index: 6; }
 .key-card input { flex: 1; }
 
