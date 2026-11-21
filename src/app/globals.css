@@ -478,3 +478,15 @@ input[type='text'], input[type='datetime-local'] {
 .badges li span { font-size: 0.8rem; }
 .badges li.earned { border: 1.5px solid var(--ink); border-left: 6px solid var(--sun); background: #fff; color: var(--ink); }
 .daily .label { font-weight: 600; font-size: 0.8rem; color: var(--ink-soft); }
+
+
+/* ---------- The cinematic city ---------- */
+.cinematic-canvas { position: absolute; inset: 0; }
+.cinematic-credits {
+  position: absolute; left: 10px; bottom: 8px; z-index: 2; display: flex; gap: 8px; align-items: baseline; max-width: 60%;
+  color: #fff; font-size: 0.7rem; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); pointer-events: none;
+}
+.cinematic-credits strong { font-size: 0.95rem; font-weight: 700; letter-spacing: 0.01em; }
+.cinematic-credits span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The engine lights the scene itself, so the tints and drawn-on sky used elsewhere step aside. */
+.map.engine .grade, .map.engine .stars, .map.engine .moon { display: none; }

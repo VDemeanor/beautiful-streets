@@ -6,3 +6,4 @@ data/*.db*
 next-env.d.ts
 *.tsbuildinfo
 public/maplibre-gl-worker.mjs
+public/draco

@@ -8,6 +8,7 @@ import * as SunCalc from 'suncalc';
 import { haversine } from '@/lib/geo';
 import { Bay } from './bay';
 import { Flight, mapStage, RIGS, type FlightState } from './flight';
+import Cinematic from './Cinematic';
 import Photoreal, { type PhotorealApi } from './Photoreal';
 import { badges, coverage, dailyWalk, day, EMPTY_GAME, liveStreak, loadGame, recordWalk, routeGems, saveGame, type GameState } from './game';
 import { makeGround } from './ground';
@@ -122,6 +123,9 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
   const [scores, setScores] = useState(false);
   // The photoreal city: Google's real buildings in place of the drawn ones.
   const [real, setReal] = useState(false);
+  /** Which real city is showing: Google's own viewer, or the cinematic renderer. */
+  const [engine, setEngine] = useState<'photo' | 'cinema'>('photo');
+  const wanted = useRef<'photo' | 'cinema'>('photo');
   const [gKey, setGKey] = useState(googleKey);
   const [askKey, setAskKey] = useState(false);
   const [keyDraft, setKeyDraft] = useState('');
@@ -737,18 +741,21 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
   /** Ground height anywhere on the streets, in metres above sea level. */
   const ground = useMemo(() => makeGround(blocks), [blocks]);
 
-  const toggleReal = () => {
-    if (real) {
+  /** Open one of the two real cities, or close it if it is already showing. */
+  const toggleReal = (which: 'photo' | 'cinema') => {
+    if (real && engine === which) {
       endFilm();
       setReal(false);
       return;
     }
+    wanted.current = which;
     if (!gKey) {
       setAskKey(true);
       return;
     }
     endFilm();
     setThreeD(true);
+    setEngine(which);
     setReal(true);
   };
 
@@ -766,6 +773,7 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
     setAskKey(false);
     endFilm();
     setThreeD(true);
+    setEngine(wanted.current);
     setReal(true);
   };
 
@@ -1038,14 +1046,29 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
 
   return (
     <div className={`shell${film ? ' filming' : ''}`}>
-      <div className={`map ${skyPhase}${threeD ? ' scene' : ''}${film ? ' cinema' : ''}${real ? ' real' : ''}${timeMode === 'night' ? ' dusk' : ''}`}>
+      <div className={`map ${skyPhase}${threeD ? ' scene' : ''}${film ? ' cinema' : ''}${real ? ' real' : ''}${timeMode === 'night' ? ' dusk' : ''}${real && engine === 'cinema' ? ' engine' : ''}`}>
         <div ref={mapEl} className="map-canvas" />
         {sunSpot && (
           <div className={`sun ${skyPhase}${sunSpot.above ? ' above' : ''}`} style={{ left: sunSpot.x, top: sunSpot.y }} aria-hidden="true" />
         )}
         {nightSky && <div className="stars" style={{ height: nightSky.horizon, opacity: nightSky.fade }} aria-hidden="true" />}
         {nightSky?.moon && <div className="moon" style={{ left: nightSky.moon.x, top: nightSky.moon.y, opacity: nightSky.fade }} aria-hidden="true" />}
-        {real && gKey && start && (
+        {real && gKey && start && engine === 'cinema' && (
+          <Cinematic
+            key="cinema"
+            apiKey={gKey}
+            start={start}
+            legs={legs}
+            altitude={ground}
+            sun={sun}
+            onReady={(api) => {
+              realApi.current = api;
+              setRealReady(!!api);
+            }}
+            onError={(message) => setToast(message)}
+          />
+        )}
+        {real && gKey && start && engine === 'photo' && (
           <Photoreal
             apiKey={gKey}
             start={start}
@@ -1154,7 +1177,8 @@ export default function App({ mapStyle, googleKey }: { mapStyle: string; googleK
         ) : (
           <div className="dock" role="group" aria-label="Map view">
             <button className="tbtn" aria-pressed={threeD} onClick={() => { if (real) { setReal(false); return; } setThreeD((v) => !v); }}>3D</button>
-            <button className="tbtn" aria-pressed={real} title="Real facades and roofs from aerial imagery" onClick={toggleReal}>Real</button>
+            <button className="tbtn" aria-pressed={real && engine === 'photo'} title="Real facades and roofs from aerial imagery" onClick={() => toggleReal('photo')}>Real</button>
+            <button className="tbtn" aria-pressed={real && engine === 'cinema'} title="The real city with its own sun, shadows and night" onClick={() => toggleReal('cinema')}>Cinema</button>
             {threeD && (
               <>
                 <button className="tbtn" aria-label="Rotate left" onClick={() => nudge(-35, 0)}>↺</button>
