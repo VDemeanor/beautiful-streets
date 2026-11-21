@@ -61,6 +61,8 @@ export interface Stage {
   height(): number;
   /** Cancel any camera motion in progress and restore the normal lens. */
   settle(): void;
+  /** How close the street camera can usefully get: metres from the walker, and its tilt. */
+  street?: { distance: number; pitch: number };
   /** Show this much of the planned path (drawn on during the opening shot). */
   reveal?(path: LngLat[]): void;
   /** The part already walked, drawn brighter over the plan. */
@@ -214,11 +216,12 @@ export class Flight {
       case 'chase': {
         // Down in the street: a few metres above the pavement, a short way behind the walker.
         const look = this.at(d + 9);
-        return { look, bearing: h, pitch: 79, zoom: this.zoomFor(30, 58, look), lens: 58 };
+        const near = this.stage.street ?? { distance: 30, pitch: 79 };
+        return { look, bearing: h, pitch: near.pitch, zoom: this.zoomFor(near.distance, 58, look), lens: 58 };
       }
       case 'side': {
         const look = this.at(d);
-        return { look, bearing: h + (flip ? -82 : 82), pitch: 74, zoom: this.zoomFor(62 - 8 * t, 52, look), lens: 52 };
+        return { look, bearing: h + (flip ? -82 : 82), pitch: this.stage.street ? 68 : 74, zoom: this.zoomFor((this.stage.street ? 85 : 62) - 8 * t, 52, look), lens: 52 };
       }
       case 'drone':
         return { look: this.at(d + 45), bearing: h - 28 + 56 * t, pitch: 56, zoom: 16.45, lens: 40 };

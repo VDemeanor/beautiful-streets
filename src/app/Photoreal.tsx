@@ -210,6 +210,9 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
             } else walker.position = position;
           },
           ground: (at) => altitudeRef.current(at),
+          // The photographed city is a rough mesh up close, and street trees swallow a low camera,
+          // so here the street shot stays just above the treetops.
+          street: { distance: 70, pitch: 67 },
           height,
           reveal(path) {
             try {
