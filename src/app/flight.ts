@@ -15,7 +15,7 @@ import { drawWalker } from './walker';
 export type Rig = 'director' | 'chase' | 'side' | 'drone' | 'orbit';
 export const RIGS: { id: Rig; label: string; hint: string }[] = [
   { id: 'director', label: 'Director', hint: 'Cuts between all the angles' },
-  { id: 'chase', label: 'Street', hint: 'Low behind you, looking ahead' },
+  { id: 'chase', label: 'Follow', hint: 'Behind you, looking ahead' },
   { id: 'side', label: 'Tracking', hint: 'Alongside, facing the houses' },
   { id: 'drone', label: 'Drone', hint: 'High above, panning slowly' },
   { id: 'orbit', label: 'Orbit', hint: 'Circling you as you walk' },
@@ -125,6 +125,9 @@ export function mapStage(map: maplibregl.Map): Stage {
 
 export const NORMAL_LENS = 36.87;
 const SHOT_METRES = 170;
+/** Over the photographed city shots run longer and flow into each other, so it is not reloaded at every cut. */
+const AERIAL_SHOT_METRES = 320;
+const AERIAL_SEQUENCE: Exclude<Rig, 'director'>[] = ['chase', 'orbit', 'drone', 'side', 'chase', 'drone'];
 /** The director's running order. Tracking shots alternate sides of the street. */
 const SEQUENCE: Exclude<Rig, 'director'>[] = ['chase', 'side', 'drone', 'chase', 'orbit', 'side', 'chase', 'drone'];
 
@@ -151,6 +154,16 @@ export class Flight {
   private frames = 0;
   private sight = 90;
   private flow = 1;
+  /** True over the photographed city, which looks its best from rooftop height and above. */
+  private get aerial() {
+    return !!this.stage.street;
+  }
+  private get shotMetres() {
+    return this.aerial ? AERIAL_SHOT_METRES : SHOT_METRES;
+  }
+  private get sequence() {
+    return this.aerial ? AERIAL_SEQUENCE : SEQUENCE;
+  }
   private from: Shot;
   private state: FlightState;
   private introMs: number;
@@ -242,7 +255,7 @@ export class Flight {
       }
       case 'side': {
         const look = this.at(d);
-        return { look, bearing: h + (flip ? -82 : 82), pitch: this.stage.street ? 60 : 74, zoom: this.zoomFor((this.stage.street ? 95 : 62) - 8 * t, 52, look), lens: 52 };
+        return { look, bearing: h + (flip ? -82 : 82), pitch: this.aerial ? 55 : 74, zoom: this.zoomFor((this.aerial ? 170 : 62) - 8 * t, 52, look), lens: 52 };
       }
       case 'drone':
         return { look: this.at(d + 45), bearing: h - 28 + 56 * t, pitch: 56, zoom: 16.45, lens: 40 };
@@ -369,8 +382,8 @@ export class Flight {
       const corner = 1 - 0.45 * Math.min(1, this.bend(this.d) / 70);
       const arrive = Math.min(1, 0.3 + (this.total - this.d) / 60);
       // Close to the ground the same speed looks far faster, so street-level shots slow down.
-      const shooting = s.rig === 'director' ? SEQUENCE[Math.floor(this.d / SHOT_METRES) % SEQUENCE.length] : s.rig;
-      const near = shooting === 'chase' ? 0.5 : shooting === 'side' ? 0.72 : 1;
+      const shooting = s.rig === 'director' ? this.sequence[Math.floor(this.d / this.shotMetres) % this.sequence.length] : s.rig;
+      const near = this.aerial ? 1 : shooting === 'chase' ? 0.5 : shooting === 'side' ? 0.72 : 1;
       // Where the city is still loading in, ease right down and let it catch up.
       this.flow = lerp(this.flow, this.stage.busy?.() ? 0.3 : 1, 0.04);
       this.d = Math.min(this.total, this.d + (dt / 1000) * 42 * s.speed * away * corner * arrive * near * (this.stage.pace ?? 1) * this.flow);
@@ -378,21 +391,23 @@ export class Flight {
         this.lastTrail = now;
         this.stage.trail?.(this.upTo(this.d));
       }
-      const index = Math.floor(this.d / SHOT_METRES);
-      const t = (this.d % SHOT_METRES) / SHOT_METRES;
-      const rig = s.rig === 'director' ? SEQUENCE[index % SEQUENCE.length] : s.rig;
+      const index = Math.floor(this.d / this.shotMetres);
+      const t = (this.d % this.shotMetres) / this.shotMetres;
+      const rig = s.rig === 'director' ? this.sequence[index % this.sequence.length] : s.rig;
       const want = this.shot(rig, this.d, t, index % 2 === 1);
       let cuts = s.cuts;
-      if (!this.cam || (s.rig === 'director' && index !== this.shotIndex)) {
+      if (!this.cam || (!this.aerial && s.rig === 'director' && index !== this.shotIndex)) {
         // A new shot from the director is a hard cut, like a film edit.
         if (this.cam) cuts++;
         this.cam = want;
         this.shotIndex = index;
       } else {
-        // Within a shot the camera glides toward where the rig wants it.
-        const k = 1 - Math.exp(-dt / 420);
+        // Within a shot the camera glides toward where the rig wants it. Over the photographed
+        // city it also glides from one shot to the next, like a single helicopter take.
+        const k = 1 - Math.exp(-dt / (this.aerial ? 1500 : 420));
+        const kLook = this.aerial ? 1 - Math.exp(-dt / 500) : 1;
         this.cam = {
-          look: want.look,
+          look: [lerp(this.cam.look[0], want.look[0], kLook), lerp(this.cam.look[1], want.look[1], kLook)],
           bearing: turn(this.cam.bearing, want.bearing, k),
           pitch: lerp(this.cam.pitch, want.pitch, k),
           zoom: lerp(this.cam.zoom, want.zoom, k),
@@ -463,7 +478,7 @@ export class Flight {
   seek(progress: number) {
     this.d = clamp(progress, 0, 1) * this.total;
     this.cam = null;
-    this.shotIndex = Math.floor(this.d / SHOT_METRES);
+    this.shotIndex = Math.floor(this.d / this.shotMetres);
     this.phaseMs = 0;
     this.travelMs = 3000;
     this.stage.reveal?.(this.pts);
@@ -471,8 +486,8 @@ export class Flight {
     this.emit({ phase: 'travel', progress: this.d / this.total, metres: this.d, leg: this.legAt(this.d) });
     if (!this.state.playing) {
       const index = this.shotIndex;
-      const rig = this.state.rig === 'director' ? SEQUENCE[index % SEQUENCE.length] : this.state.rig;
-      this.cam = this.shot(rig, this.d, (this.d % SHOT_METRES) / SHOT_METRES, index % 2 === 1);
+      const rig = this.state.rig === 'director' ? this.sequence[index % this.sequence.length] : this.state.rig;
+      this.cam = this.shot(rig, this.d, (this.d % this.shotMetres) / this.shotMetres, index % 2 === 1);
       this.apply(this.cam);
       this.stage.walker(this.at(this.d), this.facing(this.d));
     }

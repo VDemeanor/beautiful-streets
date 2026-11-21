@@ -519,7 +519,7 @@ export function createEngine(host: HTMLElement, options: Options): CinemaApi {
     },
     ground,
     // Close enough to feel like being in the street, high enough to clear the street trees.
-    street: { distance: 46, pitch: 74 },
+    street: { distance: 120, pitch: 64 },
     pace: 0.42,
     busy: () => tiles.loadProgress < 0.97,
     sees(s) {

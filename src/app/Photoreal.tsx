@@ -71,6 +71,12 @@ function svgMarker(lib: Maps3d, options: Record<string, unknown>, svg: string): 
   return marker;
 }
 
+/** A glowing marker that floats over the walker. */
+const BEACON_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">' +
+  '<defs><radialGradient id="b"><stop offset="0" stop-color="#ffd27a" stop-opacity=".95"/><stop offset="1" stop-color="#ffb23e" stop-opacity="0"/></radialGradient></defs>' +
+  '<circle cx="17" cy="17" r="16" fill="url(#b)"/><circle cx="17" cy="17" r="6" fill="#e2542f" stroke="#fff" stroke-width="2.5"/></svg>';
+
 /** A pickup waiting on the route. */
 const PICKUP_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">' +
@@ -145,6 +151,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
     let cancelled = false;
     let walker: any[] = [];
     let walkerWarned = false;
+    let beacon: any = null;
     let steady = true;
     const fleet = new Map<number, any>();
     const pickups = new Map<string, any>();
@@ -196,6 +203,8 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
             if (!at) {
               for (const model of walker) model.remove();
               walker = [];
+              beacon?.remove();
+              beacon = null;
               return;
             }
             try {
@@ -213,6 +222,12 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
                   walker.push(model);
                 }
               }
+              // A beacon over their head, so they can be found from the air.
+              const over = { lat: at[1], lng: at[0], altitude: 2.4 * scale + 3 };
+              if (!beacon) {
+                beacon = svgMarker(lib, { position: over, altitudeMode: 'RELATIVE_TO_MESH' }, BEACON_SVG);
+                map.append(beacon);
+              } else beacon.position = over;
               walker.forEach((model, i) => {
                 model.position = { lat: at[1], lng: at[0], altitude: i === step ? tune.altitude : -500 };
                 model.orientation = orientation;
@@ -224,9 +239,9 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
             }
           },
           ground: (at) => altitudeRef.current(at),
-          // The photographed city is a rough mesh up close, and street trees swallow a low camera,
-          // so here the street shot stays just above the treetops.
-          street: { distance: 70, pitch: 67 },
+          // The photographed city is sharp from rooftop height and a rough mesh at eye level, and
+          // low cameras get lost behind buildings and trees, so here every shot is flown from above.
+          street: { distance: 150, pitch: 60 },
           // Google sends a rough city first and the detail a moment later, so the film travels
           // slower here and waits while detail is still arriving.
           pace: 0.42,
@@ -378,6 +393,7 @@ export default function Photoreal({ apiKey, start, legs, altitude, onReady, onEr
     return () => {
       cancelled = true;
       for (const model of walker) model.remove();
+      beacon?.remove();
       for (const model of fleet.values()) model.remove();
       fleet.clear();
       for (const marker of pickups.values()) marker.remove();
